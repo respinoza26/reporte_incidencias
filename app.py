@@ -143,12 +143,16 @@ class DataManager:
                 'trabajadores': preprocess_trabajadores,
                 'maestro_centros': preprocess_maestro_centros,
                 'tarifas_incidencias': preprocess_tarifas_incidencias,
+                'cuenta_motivos': lambda df: df,  # O un preprocesador específico si es necesario
+
             }
             xls = pd.ExcelFile(file_path)
             sheets_df = {}
             for sheet_name in xls.sheet_names:
                 if sheet_name == 'tarifas_incidencias':
                     df = pd.read_excel(xls, sheet_name=sheet_name, skiprows=3, usecols="A:C")
+                elif sheet_name == 'cuenta_motivos':
+                    df = pd.read_excel(xls, sheet_name=sheet_name)
                 else:
                     df = pd.read_excel(xls, sheet_name=sheet_name)
                 if sheet_name in preprocessors:
@@ -306,7 +310,7 @@ class TablaUnificadaIncidencias:
             "Trabajador": st.column_config.SelectboxColumn("Trabajador", options=[""] + todos_empleados, required=True, width="medium"),
             "Imputación Nómina": st.column_config.SelectboxColumn("Imputación Nómina", options=[""] + ["01 Enero", "02 Febrero", "03 Marzo", "04 Abril", "05 Mayo", "06 Junio", "07 Julio", "08 Agosto", "09 Septiembre", "10 Octubre", "11 Noviembre", "12 Diciembre"], required=True, width="small", disabled=True),
             "Facturable": st.column_config.SelectboxColumn("Facturable", options=["", "Sí", "No"], required=True, width="small"),
-            "Motivo": st.column_config.SelectboxColumn("Motivo", options=["", "Sustitución", "Refuerzo", "Vacaciones", "Baja médica", "Formación", "Otro"], required=True, width="small"),
+            "Motivo": st.column_config.SelectboxColumn("Motivo", options=["Absentismo", "Refuerzo", "Eventos", "Festivos y Fines de Semana", "Permiso retribuido", "Puesto pendiente de cubrir","Formación","Otros","Nocturnidad"], required=True, width="small"),
             "Código Crown Origen": st.column_config.NumberColumn("Crown Origen", disabled=True),
             # CORRECCIÓN: Usar SelectboxColumn para crear el desplegable
             "Código Crown Destino": st.column_config.SelectboxColumn("Crown Destino", options=centros_crown, required=True, width="small"),
@@ -378,7 +382,7 @@ class TablaUnificadaIncidencias:
 
 class ExportManager:
     @staticmethod
-    def export_to_excel(incidencias: List[Incidencia]) -> Optional[bytes]:
+    def export_to_excel(incidencias: List[Incidencia], data_manager: DataManager) -> Optional[bytes]:
         incidencias_validas = [inc for inc in incidencias if inc.is_valid()]
         if not incidencias_validas:
             return None
@@ -404,10 +408,26 @@ class ExportManager:
                 'observaciones': inc.observaciones,
                 'centro_preferente': inc.centro_preferente,
                 'categoria': inc.categoria,
-                'servicio': inc.servicio
+                'servicio': inc.servicio,
             })
         
         df = pd.DataFrame(data)
+        # Obtener los datos de la tabla de motivos
+        df_motivos = data_manager.maestros.get('cuenta_motivos', pd.DataFrame())
+
+        st.info(f"Hoja 'cuenta_motivos' cargada: {'Sí' if not df_motivos.empty else 'No'}")
+        if not df_motivos.empty:
+            st.info(f"Columnas en 'cuenta_motivos': {df_motivos.columns.tolist()}")
+            st.info(f"Ejemplo de mapeo de motivos: {dict(zip(df_motivos['Motivo'], df_motivos['desc_cuenta'])) if 'Motivo' in df_motivos.columns else 'Columnas no encontradas'}")
+
+        # Si la tabla de motivos existe, crear el diccionario de mapeo
+        # Tu código espera 'Motivo' y 'desc_cuenta'
+        if not df_motivos.empty and 'Motivo' in df_motivos.columns and 'desc_cuenta' in df_motivos.columns:
+            motivo_map = dict(zip(df_motivos['Motivo'], df_motivos['desc_cuenta']))
+            # Crear la nueva columna 'cuenta_motivo' en el DataFrame final
+            df['cuenta_motivos'] = df['motivo'].map(motivo_map).fillna("N/A")
+
+
         excel_buffer = io.BytesIO()
         df.to_excel(excel_buffer, index=False, engine='openpyxl')
         excel_buffer.seek(0)
@@ -436,7 +456,7 @@ class IncidenciasApp:
         tabla_unificada = TablaUnificadaIncidencias(data_manager)
         tabla_unificada.render(st.session_state.selected_jefe)
         
-        self._render_export_section()
+        self._render_export_section(data_manager)
 
     def _render_header(self, data_manager: DataManager):
         st.title("Plantilla de Registro de Incidencias")
@@ -466,7 +486,7 @@ class IncidenciasApp:
             st.session_state.incidencias = []
             st.rerun()
 
-    def _render_export_section(self):
+    def _render_export_section(self,data_manager: DataManager):
         st.markdown("---")
         st.header("📊 Exportar Datos")
         
@@ -490,7 +510,7 @@ class IncidenciasApp:
             st.info("💡 Complete todos los campos obligatorios: Trabajador, Imputación Nómina, Facturable, Motivo, Código Crown Destino, Fecha y Observaciones.")
             return
             
-        excel_data = ExportManager.export_to_excel(incidencias_validas)
+        excel_data = ExportManager.export_to_excel(incidencias_validas, data_manager)        
         if excel_data:
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             filename = f"incidencias_{st.session_state.selected_jefe.replace(' ', '_')}_{timestamp}.xlsx"
