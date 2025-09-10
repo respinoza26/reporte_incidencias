@@ -5,17 +5,16 @@ from datetime import datetime
 import io
 from typing import List, Dict, Optional
 from dataclasses import dataclass, field
-from abc import ABC, abstractmethod
 
-# OPTIMIZACIÓN 1: Configuración más específica para mejorar rendimiento
+# OPTIMIZACIÓN 1: Configuración mejorada
 st.set_page_config(
     page_title="Registro de Incidencias",
     page_icon="📋",
     layout="wide",
-    initial_sidebar_state="collapsed"  # Reduce elementos iniciales
+    initial_sidebar_state="collapsed"
 )
 
-# OPTIMIZACIÓN 2: Funciones de preprocesamiento optimizadas con operaciones vectorizadas
+# OPTIMIZACIÓN 2: Funciones de preprocesamiento optimizadas
 def preprocess_centros(df: pd.DataFrame) -> pd.DataFrame:
     """Optimizada con operaciones vectorizadas"""
     df.columns = [
@@ -24,7 +23,6 @@ def preprocess_centros(df: pd.DataFrame) -> pd.DataFrame:
         'desc_centro_preferente', 'almacen_centro'
     ]
     
-    # Usar query() es más eficiente que múltiples filtros
     df = df.query('fecha_baja_centro.isna() & cod_jefe.notna()').drop(
         columns=['fecha_baja_centro', 'fecha_alta_centro', 'almacen_centro']
     )
@@ -32,10 +30,8 @@ def preprocess_centros(df: pd.DataFrame) -> pd.DataFrame:
 
 def preprocess_trabajadores(df: pd.DataFrame) -> pd.DataFrame:
     """Optimizada con operaciones en lote"""
-    # Limpiar nombres de columnas de una vez
     df.columns = df.columns.str.strip().str.replace('\n', ' ')
     
-    # Mapeo de columnas optimizado
     column_mapping = {
         'Empresa': 'cod_empresa',
         'Empleado - Código': 'cod_empleado',
@@ -58,7 +54,6 @@ def preprocess_trabajadores(df: pd.DataFrame) -> pd.DataFrame:
     }
     df = df.rename(columns=column_mapping)
 
-    # Optimización de códigos de empresa con np.select (más rápido)
     if 'cod_empresa' in df.columns:
         empresa_str = df['cod_empresa'].astype(str)
         conditions = [
@@ -69,14 +64,12 @@ def preprocess_trabajadores(df: pd.DataFrame) -> pd.DataFrame:
         choices = ['SMI', 'ALGADI', 'DISTEGSA']
         df['cod_empresa'] = np.select(conditions, choices, default='Otros')
     
-    # Filtros optimizados
     if 'cod_seccion' in df.columns:
         df = df.dropna(subset=['cod_seccion'])
     
     if 'nombre_empleado' in df.columns:
         df['nombre_empleado'] = df['nombre_empleado'].str.upper()
 
-    # Clasificación de servicio optimizada
     if 'servicio' not in df.columns and 'cat_empleado' in df.columns:
         df['servicio'] = np.where(
             df['cat_empleado'].str.contains('limp', case=False, na=False),
@@ -87,13 +80,48 @@ def preprocess_trabajadores(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def preprocess_maestro_centros(df: pd.DataFrame) -> pd.DataFrame:
-    """Sin cambios necesarios - ya es eficiente"""
     df = df[['ccentro', 'dcentro', 'centropref']]
     df.columns = ['codigo_centro', 'nombre_centro', 'cod_centro_preferente']
     return df
 
 def preprocess_tarifas_incidencias(df: pd.DataFrame) -> pd.DataFrame:
     return df
+
+# OPTIMIZACIÓN 3: Función cacheada independiente
+@st.cache_data(ttl=3600)
+def load_and_preprocess_excel(file_path: str) -> Dict[str, pd.DataFrame]:
+    """Función cacheada optimizada"""
+    try:
+        preprocessors = {
+            'centros': preprocess_centros,
+            'trabajadores': preprocess_trabajadores,
+            'maestro_centros': preprocess_maestro_centros,
+            'tarifas_incidencias': preprocess_tarifas_incidencias,
+            'cuenta_motivos': lambda df: df,
+        }
+        
+        sheets_df = {}
+        with pd.ExcelFile(file_path) as xls:
+            for sheet_name in xls.sheet_names:
+                if sheet_name == 'tarifas_incidencias':
+                    df = pd.read_excel(xls, sheet_name=sheet_name, skiprows=3, usecols="A:C")
+                elif sheet_name == 'cuenta_motivos':
+                    df = pd.read_excel(xls, sheet_name=sheet_name)
+                else:
+                    df = pd.read_excel(xls, sheet_name=sheet_name)
+                
+                if sheet_name in preprocessors:
+                    df = preprocessors[sheet_name](df)
+                sheets_df[sheet_name] = df
+                
+        return sheets_df
+        
+    except FileNotFoundError:
+        st.error(f"Error: El archivo '{file_path}' no se encuentra.")
+        return {}
+    except Exception as e:
+        st.error(f"Error leyendo el archivo Excel: {e}")
+        return {}
 
 @dataclass
 class Incidencia:
@@ -118,7 +146,6 @@ class Incidencia:
     servicio: str = ""
     
     def to_dict(self) -> Dict:
-        """Optimizada - evita recrear el diccionario cada vez"""
         return {
             "Borrar": False,
             "Trabajador": self.trabajador,
@@ -143,7 +170,6 @@ class Incidencia:
         }
 
     def is_valid(self) -> bool:
-        """Optimizada - validación más eficiente"""
         return all([
             self.trabajador,
             self.imputacion_nomina,
@@ -154,61 +180,14 @@ class Incidencia:
             self.observaciones
         ])
 
-# OPTIMIZACIÓN 3: Clase DataManager completamente optimizada
+# OPTIMIZACIÓN 4: DataManager simplificado sin Singleton
 class DataManager:
-    _instance = None
-    _data_loaded = False
-    
-    # OPTIMIZACIÓN: Singleton pattern para evitar recargas
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
-    
-    @st.cache_data(ttl=3600)  # Cache por 1 hora
-    def _load_and_preprocess_excel(_file_path: str) -> Dict[str, pd.DataFrame]:
-        """Optimizada con mejor manejo de errores y cache"""
-        try:
-            preprocessors = {
-                'centros': preprocess_centros,
-                'trabajadores': preprocess_trabajadores,
-                'maestro_centros': preprocess_maestro_centros,
-                'tarifas_incidencias': preprocess_tarifas_incidencias,
-                'cuenta_motivos': lambda df: df,
-            }
-            
-            # Cargar todas las hojas de una vez
-            sheets_df = {}
-            with pd.ExcelFile(_file_path) as xls:
-                for sheet_name in xls.sheet_names:
-                    if sheet_name == 'tarifas_incidencias':
-                        df = pd.read_excel(xls, sheet_name=sheet_name, skiprows=3, usecols="A:C")
-                    elif sheet_name == 'cuenta_motivos':
-                        df = pd.read_excel(xls, sheet_name=sheet_name)
-                    else:
-                        df = pd.read_excel(xls, sheet_name=sheet_name)
-                    
-                    if sheet_name in preprocessors:
-                        df = preprocessors[sheet_name](df)
-                    sheets_df[sheet_name] = df
-                    
-            return sheets_df
-            
-        except FileNotFoundError:
-            st.error(f"Error: El archivo '{_file_path}' no se encuentra.")
-            return {}
-        except Exception as e:
-            st.error(f"Error leyendo el archivo Excel: {e}")
-            return {}
-
     def __init__(self):
-        if not self._data_loaded:
-            self.maestros = self._load_and_preprocess_excel('data/maestros.xlsx')
-            self._prepare_dataframes()
-            self._data_loaded = True
+        self.maestros = load_and_preprocess_excel('data/maestros.xlsx')
+        self._prepare_dataframes()
 
     def _prepare_dataframes(self):
-        """Preparar DataFrames optimizados una sola vez"""
+        """Preparar DataFrames optimizados"""
         df_centros = self.maestros.get('centros', pd.DataFrame())
         df_trabajadores = self.maestros.get('trabajadores', pd.DataFrame())
         
@@ -227,47 +206,34 @@ class DataManager:
             self.df_trabajadores = df_trabajadores
             
         self.df_centros = df_centros
-        
-        # OPTIMIZACIÓN: Pre-calcular listas que se usan frecuentemente
-        self._cached_jefes = None
-        self._cached_employees = None
-        self._cached_centros_crown = None
 
     @property
     def jefes_list(self) -> List[str]:
-        """Cache de jefes para evitar recálculos"""
-        if self._cached_jefes is None:
-            jefes = set()
-            if not self.df_centros.empty and 'nombre_jefe_ope' in self.df_centros.columns:
-                jefes.update(self.df_centros['nombre_jefe_ope'].dropna().unique())
-            if not self.df_trabajadores.empty and 'nombre_jefe_ope' in self.df_trabajadores.columns:
-                jefes.update(self.df_trabajadores['nombre_jefe_ope'].dropna().unique())
-            self._cached_jefes = sorted(list(jefes))
-        return self._cached_jefes
+        """Lista de jefes"""
+        jefes = set()
+        if not self.df_centros.empty and 'nombre_jefe_ope' in self.df_centros.columns:
+            jefes.update(self.df_centros['nombre_jefe_ope'].dropna().unique())
+        if not self.df_trabajadores.empty and 'nombre_jefe_ope' in self.df_trabajadores.columns:
+            jefes.update(self.df_trabajadores['nombre_jefe_ope'].dropna().unique())
+        return sorted(list(jefes))
 
     @property
     def employees_list(self) -> List[str]:
-        """Cache de empleados para evitar recálculos"""
-        if self._cached_employees is None:
-            if self.df_trabajadores.empty:
-                self._cached_employees = []
-            else:
-                self._cached_employees = sorted(self.df_trabajadores['nombre_empleado'].dropna().unique())
-        return self._cached_employees
+        """Lista de empleados"""
+        if self.df_trabajadores.empty:
+            return []
+        return sorted(self.df_trabajadores['nombre_empleado'].dropna().unique())
 
     @property
     def centros_crown_list(self) -> List[str]:
-        """Cache de centros Crown para selectbox"""
-        if self._cached_centros_crown is None:
-            if self.df_centros.empty:
-                self._cached_centros_crown = [""]
-            else:
-                centros = self.df_centros['codigo_centro'].dropna().astype(int).unique()
-                self._cached_centros_crown = [""] + sorted(centros.tolist())
-        return self._cached_centros_crown
+        """Lista de centros Crown"""
+        if self.df_centros.empty:
+            return [""]
+        centros = self.df_centros['codigo_centro'].dropna().astype(int).unique()
+        return [""] + sorted(centros.tolist())
 
     def get_empleado_info(self, nombre_empleado: str) -> Dict:
-        """Optimizada con mejor manejo de errores"""
+        """Información del empleado"""
         if self.df_trabajadores.empty or not nombre_empleado:
             return {}
             
@@ -280,7 +246,6 @@ class DataManager:
         empleado = empleados_found.iloc[0]
         info = empleado.to_dict()
         
-        # Valores por defecto
         default_values = {
             'servicio': '',
             'cat_empleado': '',
@@ -295,15 +260,13 @@ class DataManager:
                 
         return info
 
-# OPTIMIZACIÓN 4: Clase TablaUnificadaIncidencias optimizada
+# OPTIMIZACIÓN 5: Tabla optimizada
 class TablaUnificadaIncidencias:
     def __init__(self, data_manager: DataManager):
         self.data_manager = data_manager
-        # OPTIMIZACIÓN: Pre-calcular configuración de columnas
-        self._column_config = self._get_column_config()
 
     def _get_column_config(self):
-        """Pre-calcular configuración de columnas para evitar recrearla"""
+        """Configuración de columnas"""
         return {
             "Borrar": st.column_config.CheckboxColumn("Borrar", help="Selecciona las filas a borrar", default=False),
             "Trabajador": st.column_config.SelectboxColumn("Trabajador", options=[""] + self.data_manager.employees_list, required=True, width="medium"),
@@ -387,21 +350,21 @@ class TablaUnificadaIncidencias:
                 incidencia.nombre_jefe_ope = empleado_jefe if empleado_jefe else "N/A"
 
     def _render_main_table(self, incidencias: List[Incidencia], selected_jefe: str) -> None:
-        # OPTIMIZACIÓN: Solo actualizar si hay cambios
         for incidencia in incidencias:
             if incidencia.trabajador:
                 self._actualizar_datos_empleado(incidencia, incidencia.trabajador, selected_jefe)
         
-        # OPTIMIZACIÓN: Crear DataFrame más eficientemente
         if incidencias:
             df = pd.DataFrame([inc.to_dict() for inc in incidencias])
             df['Fecha'] = pd.to_datetime(df['Fecha'], errors='coerce')
         else:
             df = pd.DataFrame()
         
+        column_config = self._get_column_config()
+        
         st.data_editor(
             df,
-            column_config=self._column_config,
+            column_config=column_config,
             width='stretch',
             num_rows="fixed",
             key="unificado_editor"
@@ -409,16 +372,14 @@ class TablaUnificadaIncidencias:
         
         st.caption("ℹ️ El campo 'Supervisor de operaciones' se completa automáticamente al seleccionar un trabajador.")
         
-        # OPTIMIZACIÓN: Procesamiento de cambios más eficiente
         if st.button("💾 Guardar cambios"):
             self._process_changes()
 
     def _process_changes(self):
-        """Procesamiento optimizado de cambios"""
+        """Procesamiento de cambios"""
         edited_rows = st.session_state.get("unificado_editor", {}).get("edited_rows", {})
         incidents_to_update = st.session_state.incidencias[:]
         
-        # Mapeo de atributos optimizado
         attr_map = {
             "Imputación Nómina": "imputacion_nomina",
             "Facturable": "facturable",
@@ -441,16 +402,13 @@ class TablaUnificadaIncidencias:
                 
             incidencia = incidents_to_update[row_idx]
             
-            # Actualizar datos del empleado si cambió
             if "Trabajador" in row_data and row_data["Trabajador"]:
                 self._actualizar_datos_empleado(incidencia, row_data["Trabajador"], st.session_state.selected_jefe)
             
-            # Actualizar otros campos
             for field_name, value in row_data.items():
                 if field_name in attr_map:
                     setattr(incidencia, attr_map[field_name], value)
                     
-        # Filtrar incidencias no marcadas para borrar
         new_incidents = [
             inc for i, inc in enumerate(incidents_to_update) 
             if not edited_rows.get(i, {}).get("Borrar", False)
@@ -460,7 +418,6 @@ class TablaUnificadaIncidencias:
         st.success("✅ ¡Cambios guardados con éxito!")
         st.rerun()
 
-# OPTIMIZACIÓN 5: ExportManager optimizado
 class ExportManager:
     @staticmethod
     def export_to_excel(incidencias: List[Incidencia], data_manager: DataManager) -> Optional[bytes]:
@@ -468,7 +425,6 @@ class ExportManager:
         if not incidencias_validas:
             return None
         
-        # Preparar datos optimizadamente
         data = []
         for inc in incidencias_validas:
             data.append({
@@ -495,10 +451,7 @@ class ExportManager:
         
         df = pd.DataFrame(data)
         
-        # Obtener los datos de la tabla de motivos
         df_motivos = data_manager.maestros.get('cuenta_motivos', pd.DataFrame())
-
-        # Si la tabla de motivos existe, crear el diccionario de mapeo
         if not df_motivos.empty and 'Motivo' in df_motivos.columns and 'desc_cuenta' in df_motivos.columns:
             motivo_map = dict(zip(df_motivos['Motivo'], df_motivos['desc_cuenta']))
             df['cuenta_motivos'] = df['motivo'].map(motivo_map).fillna("N/A")
@@ -508,13 +461,13 @@ class ExportManager:
         excel_buffer.seek(0)
         return excel_buffer.getvalue()
 
-# OPTIMIZACIÓN 6: App principal optimizada
+# OPTIMIZACIÓN 6: App principal simplificada
 class IncidenciasApp:
     def __init__(self):
         self._initialize_session_state()
     
     def _initialize_session_state(self):
-        """Inicialización optimizada del estado de sesión"""
+        """Inicialización del estado de sesión"""
         defaults = {
             'app_initialized_minimalist': True,
             'selected_jefe': "",
@@ -526,9 +479,13 @@ class IncidenciasApp:
             if key not in st.session_state:
                 st.session_state[key] = value
     
+    @st.cache_resource
+    def get_data_manager(_self):
+        """DataManager cacheado como recurso"""
+        return DataManager()
+    
     def run(self):
-        # OPTIMIZACIÓN: Usar singleton DataManager
-        data_manager = DataManager()
+        data_manager = self.get_data_manager()
         
         if data_manager.df_centros.empty and data_manager.df_trabajadores.empty:
             st.error("❌ No se pudieron cargar los datos. Verifica que el archivo 'data/maestros.xlsx' exista y tenga las hojas necesarias.")
@@ -547,9 +504,8 @@ class IncidenciasApp:
 
     def _render_header(self, data_manager: DataManager):
         st.title("Plantilla de Registro de Incidencias")
-        st.markdown("Esta versión optimizada mejora el rendimiento y la experiencia de usuario.")
+        st.markdown("Versión optimizada para mejor rendimiento.")
         
-        # OPTIMIZACIÓN: Usar listas pre-calculadas
         imputacion_opciones = [""] + ["01 Enero", "02 Febrero", "03 Marzo", "04 Abril", "05 Mayo", "06 Junio", "07 Julio", "08 Agosto", "09 Septiembre", "10 Octubre", "11 Noviembre", "12 Diciembre"]
 
         col1, col2 = st.columns(2)
@@ -568,7 +524,6 @@ class IncidenciasApp:
                 index=jefes_list.index(st.session_state.selected_jefe) + 1 if st.session_state.selected_jefe in jefes_list else 0
             )
         
-        # OPTIMIZACIÓN: Solo actualizar si realmente cambió
         if (selected_jefe != st.session_state.selected_jefe or 
             selected_imputacion != st.session_state.selected_imputacion):
             st.session_state.selected_jefe = selected_jefe
@@ -580,11 +535,9 @@ class IncidenciasApp:
         st.markdown("---")
         st.header("📊 Exportar Datos")
         
-        # OPTIMIZACIÓN: Cálculos vectorizados
         incidencias_validas = [inc for inc in st.session_state.incidencias if inc.is_valid()]
         
         if incidencias_validas:
-            # Usar NumPy para cálculos más rápidos
             incidencia_precios = np.array([inc.incidencia_precio * inc.incidencia_horas for inc in incidencias_validas])
             nocturnidad_precios = np.array([inc.nocturnidad_precio * inc.nocturnidad_horas for inc in incidencias_validas])
             traslados_precios = np.array([inc.traslados_precio * inc.traslados_horas for inc in incidencias_validas])
