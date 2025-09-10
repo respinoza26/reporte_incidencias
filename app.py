@@ -312,7 +312,6 @@ class TablaUnificadaIncidencias:
             "Facturable": st.column_config.SelectboxColumn("Facturable", options=["", "Sí", "No"], required=True, width="small"),
             "Motivo": st.column_config.SelectboxColumn("Motivo", options=["Absentismo", "Refuerzo", "Eventos", "Festivos y Fines de Semana", "Permiso retribuido", "Puesto pendiente de cubrir","Formación","Otros","Nocturnidad"], required=True, width="small"),
             "Código Crown Origen": st.column_config.NumberColumn("Crown Origen", disabled=True),
-            # CORRECCIÓN: Usar SelectboxColumn para crear el desplegable
             "Código Crown Destino": st.column_config.SelectboxColumn("Crown Destino", options=centros_crown, required=True, width="small"),
             "Empresa Destino": st.column_config.SelectboxColumn("Empresa Destino", options=["", "ALGADI","SMI","DISTEGSA"], width="small"),
             "Incidencia_horas": st.column_config.NumberColumn("Inc. Horas", width="small", min_value=0),
@@ -414,11 +413,6 @@ class ExportManager:
         df = pd.DataFrame(data)
         # Obtener los datos de la tabla de motivos
         df_motivos = data_manager.maestros.get('cuenta_motivos', pd.DataFrame())
-
-        st.info(f"Hoja 'cuenta_motivos' cargada: {'Sí' if not df_motivos.empty else 'No'}")
-        if not df_motivos.empty:
-            st.info(f"Columnas en 'cuenta_motivos': {df_motivos.columns.tolist()}")
-            st.info(f"Ejemplo de mapeo de motivos: {dict(zip(df_motivos['Motivo'], df_motivos['desc_cuenta'])) if 'Motivo' in df_motivos.columns else 'Columnas no encontradas'}")
 
         # Si la tabla de motivos existe, crear el diccionario de mapeo
         # Tu código espera 'Motivo' y 'desc_cuenta'
