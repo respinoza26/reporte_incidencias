@@ -71,9 +71,6 @@ def preprocess_trabajadores(df: pd.DataFrame) -> pd.DataFrame:
             '010 Restauración'
         )
     
-    elif 'servicio' in df.columns:
-        df['servicio'] = df['servicio'].fillna('010 Restauración')
-
     return df
 
 def preprocess_maestro_centros(df: pd.DataFrame) -> pd.DataFrame:
@@ -125,7 +122,7 @@ class Incidencia:
             "Fecha": self.fecha,
             "Observaciones": self.observaciones,
             "Centro preferente": self.centro_preferente,
-            "Jefe de operaciones": self.nombre_jefe_ope,
+            "Supervisor de operaciones": self.nombre_jefe_ope,
             "Categoría": self.categoria,
             "Servicio": self.servicio
         }
@@ -194,7 +191,7 @@ class DataManager:
         if not self.df_trabajadores.empty and 'nombre_jefe_ope' in self.df_trabajadores.columns:
             jefes.update(self.df_trabajadores['nombre_jefe_ope'].dropna().unique())
         return sorted(list(jefes))
-        
+    
     def get_all_employees(self) -> List[str]:
         if self.df_trabajadores.empty:
             return []
@@ -208,7 +205,7 @@ class DataManager:
             info = empleado.to_dict()
             
             default_values = {
-                'servicio': '010 Restauración',
+                'servicio': '',
                 'cat_empleado': '',
                 'cod_crown': '',
                 'centro_preferente': '',
@@ -281,7 +278,7 @@ class TablaUnificadaIncidencias:
             if empleado_info:
                 incidencia.trabajador = empleado_info.get('nombre_empleado', '')
                 incidencia.categoria = empleado_info.get('cat_empleado', '')
-                incidencia.servicio = empleado_info.get('servicio', '010 Restauración')
+                incidencia.servicio = empleado_info.get('servicio', '')
                 incidencia.centro_preferente = empleado_info.get('centro_preferente')
                 incidencia.codigo_crown_origen = empleado_info.get('cod_crown')
                 
@@ -289,12 +286,21 @@ class TablaUnificadaIncidencias:
                 incidencia.nombre_jefe_ope = empleado_jefe if empleado_jefe else "N/A"
 
     def _render_main_table(self, incidencias: List[Incidencia], selected_jefe: str) -> None:
+        # Actualizar datos de empleados antes de mostrar la tabla
+        for incidencia in incidencias:
+            if incidencia.trabajador:
+                self._actualizar_datos_empleado(incidencia, incidencia.trabajador, selected_jefe)
+        
         df = pd.DataFrame([inc.to_dict() for inc in incidencias])
         if not df.empty:
             df['Fecha'] = pd.to_datetime(df['Fecha'], errors='coerce')
         
         todos_empleados = self.data_manager.get_all_employees()
         
+        # CRÍTICO: Obtener los códigos de centros únicos para el desplegable
+        # Se añade un valor vacío y se ordenan los resultados
+        centros_crown = [""] + sorted(self.data_manager.df_centros['codigo_centro'].dropna().astype(int).unique().tolist())
+    
         column_config = {
             "Borrar": st.column_config.CheckboxColumn("Borrar", help="Selecciona las filas a borrar", default=False),
             "Trabajador": st.column_config.SelectboxColumn("Trabajador", options=[""] + todos_empleados, required=True, width="medium"),
@@ -302,7 +308,8 @@ class TablaUnificadaIncidencias:
             "Facturable": st.column_config.SelectboxColumn("Facturable", options=["", "Sí", "No"], required=True, width="small"),
             "Motivo": st.column_config.SelectboxColumn("Motivo", options=["", "Sustitución", "Refuerzo", "Vacaciones", "Baja médica", "Formación", "Otro"], required=True, width="small"),
             "Código Crown Origen": st.column_config.NumberColumn("Crown Origen", disabled=True),
-            "Código Crown Destino": st.column_config.NumberColumn("Crown Destino", required=True, width="small", min_value=100000, max_value=999999),
+            # CORRECCIÓN: Usar SelectboxColumn para crear el desplegable
+            "Código Crown Destino": st.column_config.SelectboxColumn("Crown Destino", options=centros_crown, required=True, width="small"),
             "Empresa Destino": st.column_config.SelectboxColumn("Empresa Destino", options=["", "ALGADI","SMI","DISTEGSA"], width="small"),
             "Incidencia_horas": st.column_config.NumberColumn("Inc. Horas", width="small", min_value=0),
             "Incidencia_precio": st.column_config.NumberColumn("Inc. Precio", width="small", min_value=0),
@@ -313,12 +320,24 @@ class TablaUnificadaIncidencias:
             "Fecha": st.column_config.DateColumn("Fecha", format="YYYY-MM-DD", required=True),
             "Observaciones": st.column_config.TextColumn("Observaciones", required=True, width="medium"),
             "Centro preferente": st.column_config.NumberColumn("Centro Pref.", disabled=True),
-            "Jefe de operaciones": st.column_config.TextColumn("Jefe", disabled=True),
+            "Supervisor de operaciones": st.column_config.TextColumn("Supervisor", disabled=True),
             "Categoría": st.column_config.TextColumn("Categoría", disabled=True, width="small"),
             "Servicio": st.column_config.TextColumn("Servicio", disabled=True, width="small"),
         }
         
-        def update_incidents_callback():
+        # Eliminamos el on_change para mejorar la UX y añadimos un botón
+        st.data_editor(
+            df,
+            column_config=column_config,
+            width='stretch',
+            num_rows="fixed",
+            key="unificado_editor"
+        )
+        
+        st.caption("ℹ️ El campo 'Supervisor de operaciones' se completa automáticamente al seleccionar un trabajador.")
+        
+        # Botón para procesar los cambios después de que el usuario haya terminado de editar
+        if st.button("💾 Guardar cambios"):
             edited_rows = st.session_state["unificado_editor"]["edited_rows"]
             incidents_to_update = st.session_state.incidencias
             
@@ -354,17 +373,8 @@ class TablaUnificadaIncidencias:
                         
             new_incidents = [inc for i, inc in enumerate(incidents_to_update) if not edited_rows.get(i, {}).get("Borrar", False)]
             st.session_state.incidencias = new_incidents
-        
-        st.data_editor(
-            df,
-            column_config=column_config,
-            width='stretch',
-            num_rows="fixed",
-            key="unificado_editor",
-            on_change=update_incidents_callback
-        )
-        
-        st.caption("ℹ️ El campo 'Jefe de operaciones' se completa automáticamente al seleccionar un trabajador.")
+            st.success("✅ ¡Cambios guardados con éxito!")
+            st.rerun()
 
 class ExportManager:
     @staticmethod
@@ -402,6 +412,7 @@ class ExportManager:
         df.to_excel(excel_buffer, index=False, engine='openpyxl')
         excel_buffer.seek(0)
         return excel_buffer.getvalue()
+
 class IncidenciasApp:
     def __init__(self):
         if 'app_initialized_minimalist' not in st.session_state:
@@ -444,7 +455,7 @@ class IncidenciasApp:
             )
         with col2:
             selected_jefe = st.selectbox(
-                "👤 Tu nombre de jefe:", 
+                "👤 Selecionar nombre de supervisor:", 
                 [""] + jefes_list,
                 index=jefes_list.index(st.session_state.selected_jefe) + 1 if st.session_state.selected_jefe in jefes_list else 0
             )
