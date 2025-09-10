@@ -463,18 +463,6 @@ class TablaUnificadaIncidencias:
 # OPTIMIZACIÓN 5: ExportManager optimizado
 class ExportManager:
     @staticmethod
-    @st.cache_data
-    def _prepare_export_data(incidencias_data: List[Dict], motivos_data: Dict) -> pd.DataFrame:
-        """Preparación optimizada de datos para exportación"""
-        df = pd.DataFrame(incidencias_data)
-        
-        if motivos_data and 'Motivo' in motivos_data and 'desc_cuenta' in motivos_data:
-            motivo_map = dict(zip(motivos_data['Motivo'], motivos_data['desc_cuenta']))
-            df['cuenta_motivos'] = df['motivo'].map(motivo_map).fillna("N/A")
-        
-        return df
-    
-    @staticmethod
     def export_to_excel(incidencias: List[Incidencia], data_manager: DataManager) -> Optional[bytes]:
         incidencias_validas = [inc for inc in incidencias if inc.is_valid()]
         if not incidencias_validas:
@@ -505,11 +493,15 @@ class ExportManager:
                 'servicio': inc.servicio,
             })
         
-        # Usar función cacheada para preparar datos
-        df_motivos = data_manager.maestros.get('cuenta_motivos', pd.DataFrame())
-        motivos_dict = df_motivos.to_dict() if not df_motivos.empty else {}
+        df = pd.DataFrame(data)
         
-        df = ExportManager._prepare_export_data(data, motivos_dict)
+        # Obtener los datos de la tabla de motivos
+        df_motivos = data_manager.maestros.get('cuenta_motivos', pd.DataFrame())
+
+        # Si la tabla de motivos existe, crear el diccionario de mapeo
+        if not df_motivos.empty and 'Motivo' in df_motivos.columns and 'desc_cuenta' in df_motivos.columns:
+            motivo_map = dict(zip(df_motivos['Motivo'], df_motivos['desc_cuenta']))
+            df['cuenta_motivos'] = df['motivo'].map(motivo_map).fillna("N/A")
         
         excel_buffer = io.BytesIO()
         df.to_excel(excel_buffer, index=False, engine='openpyxl')
