@@ -134,42 +134,42 @@ class Incidencia:
         ]
         return all(field is not None and field != "" and (not isinstance(field, (float, int)) or field > 0 or field == 0) for field in required_fields)
 
+@st.cache_data
+def _load_and_preprocess_excel(file_path: str) -> Dict[str, pd.DataFrame]:
+    try:
+        preprocessors = {
+            'centros': preprocess_centros,
+            'trabajadores': preprocess_trabajadores,
+            'maestro_centros': preprocess_maestro_centros,
+            'tarifas_incidencias': preprocess_tarifas_incidencias,
+            'cuenta_motivos': lambda df: df,  
+
+        }
+        xls = pd.ExcelFile(file_path)
+        sheets_df = {}
+        for sheet_name in xls.sheet_names:
+            # Leer cada hoja con las configuraciones específicas
+            if sheet_name == 'tarifas_incidencias':
+                df = pd.read_excel(xls, sheet_name=sheet_name, skiprows=3, usecols="A:C")
+            elif sheet_name == 'cuenta_motivos':
+                df = pd.read_excel(xls, sheet_name=sheet_name)
+            else:
+                df = pd.read_excel(xls, sheet_name=sheet_name)
+            if sheet_name in preprocessors:
+                df = preprocessors[sheet_name](df)
+            sheets_df[sheet_name] = df
+        return sheets_df
+    except FileNotFoundError:
+        st.error(f"Error: El archivo '{file_path}' no se encuentra.")
+        return {}
+    except Exception as e:
+        st.error(f"Error leyendo el archivo Excel: {e}")
+        return {}
+
 class DataManager:
-    @st.cache_data
-    def _load_and_preprocess_excel(file_path: str) -> Dict[str, pd.DataFrame]:
-        try:
-            preprocessors = {
-                'centros': preprocess_centros,
-                'trabajadores': preprocess_trabajadores,
-                'maestro_centros': preprocess_maestro_centros,
-                'tarifas_incidencias': preprocess_tarifas_incidencias,
-                'cuenta_motivos': lambda df: df,  # No preprocessing needed
-
-            }
-            xls = pd.ExcelFile(file_path)
-            sheets_df = {}
-            for sheet_name in xls.sheet_names:
-                # Leer cada hoja con las configuraciones específicas
-                if sheet_name == 'tarifas_incidencias':
-                    df = pd.read_excel(xls, sheet_name=sheet_name, skiprows=3, usecols="A:C")
-                elif sheet_name == 'cuenta_motivos':
-                    df = pd.read_excel(xls, sheet_name=sheet_name)
-                else:
-                    df = pd.read_excel(xls, sheet_name=sheet_name)
-                if sheet_name in preprocessors:
-                    df = preprocessors[sheet_name](df)
-                sheets_df[sheet_name] = df
-            return sheets_df
-        except FileNotFoundError:
-            st.error(f"Error: El archivo '{file_path}' no se encuentra.")
-            return {}
-        except Exception as e:
-            st.error(f"Error leyendo el archivo Excel: {e}")
-            return {}
-
     def __init__(self):
         #  Cargar y preprocesar los datos usando la clase DataManager 
-        self.maestros = DataManager._load_and_preprocess_excel('data/maestros.xlsx')
+        self.maestros = _load_and_preprocess_excel('data/maestros.xlsx')
 
         df_centros = self.maestros.get('centros', pd.DataFrame())
         df_trabajadores = self.maestros.get('trabajadores', pd.DataFrame())
@@ -470,6 +470,15 @@ class IncidenciasApp:
         tabla_unificada.render(st.session_state.selected_jefe)
         
         self._render_export_section(data_manager)
+    
+    # --- Mejora 2: Manejo de Estado con Callbacks ---
+    def _handle_imputacion_change(self):
+        st.session_state.selected_imputacion = st.session_state.imputacion_nomina_main
+        st.session_state.incidencias = []
+
+    def _handle_jefe_change(self):
+        st.session_state.selected_jefe = st.session_state.jefe_main
+        st.session_state.incidencias = []
 
     def _render_header(self, data_manager: DataManager):
         st.title("Plantilla de Registro de Incidencias")
@@ -479,24 +488,21 @@ class IncidenciasApp:
 
         col1, col2 = st.columns(2)
         with col1:
-            selected_imputacion = st.selectbox(
+            st.selectbox(
                 "📅 Imputación Nómina:",
                 imputacion_opciones,
                 index=imputacion_opciones.index(st.session_state.selected_imputacion) if st.session_state.selected_imputacion in imputacion_opciones else 0,
-                key="imputacion_nomina_main"
+                key="imputacion_nomina_main",
+                on_change=self._handle_imputacion_change
             )
         with col2:
-            selected_jefe = st.selectbox(
+            st.selectbox(
                 "👤 Selecionar nombre de supervisor:", 
                 [""] + jefes_list,
-                index=jefes_list.index(st.session_state.selected_jefe) + 1 if st.session_state.selected_jefe in jefes_list else 0
+                index=jefes_list.index(st.session_state.selected_jefe) + 1 if st.session_state.selected_jefe in jefes_list else 0,
+                key="jefe_main",
+                on_change=self._handle_jefe_change
             )
-        
-        if selected_jefe != st.session_state.selected_jefe or selected_imputacion != st.session_state.selected_imputacion:
-            st.session_state.selected_jefe = selected_jefe
-            st.session_state.selected_imputacion = selected_imputacion
-            st.session_state.incidencias = []
-            st.rerun()
 
     def _render_export_section(self,data_manager: DataManager):
         st.markdown("---")
