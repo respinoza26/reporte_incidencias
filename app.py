@@ -58,15 +58,15 @@ def preprocess_trabajadores(df: pd.DataFrame) -> pd.DataFrame:
             ['SMI', 'ALGADI', 'DISTEGSA'], default='Otros'
         )
     
-    if 'cod_seccion' in df.columns:
-        df = df[~df['cod_seccion'].isna()]
+    # if 'cod_seccion' in df.columns:
+        # df = df[~df['cod_seccion'].isna()] # Por  ahora lo vamos a dejar pero luego esto se debe conversar con RRHH
     
     if 'nombre_empleado' in df.columns:
         df['nombre_empleado'] = df['nombre_empleado'].str.upper()
 
     if 'servicio' not in df.columns and 'cat_empleado' in df.columns:
         df['servicio'] = np.where(
-            df['cat_empleado'].str.contains('limp', case=False, na=False),
+            df['cat_empleado'].str.contains('limp|asl', case=False, na=False),
             '020 Limpieza',
             '010 Restauración'
         )
@@ -143,12 +143,13 @@ class DataManager:
                 'trabajadores': preprocess_trabajadores,
                 'maestro_centros': preprocess_maestro_centros,
                 'tarifas_incidencias': preprocess_tarifas_incidencias,
-                'cuenta_motivos': lambda df: df,  # O un preprocesador específico si es necesario
+                'cuenta_motivos': lambda df: df,  # No preprocessing needed
 
             }
             xls = pd.ExcelFile(file_path)
             sheets_df = {}
             for sheet_name in xls.sheet_names:
+                # Leer cada hoja con las configuraciones específicas
                 if sheet_name == 'tarifas_incidencias':
                     df = pd.read_excel(xls, sheet_name=sheet_name, skiprows=3, usecols="A:C")
                 elif sheet_name == 'cuenta_motivos':
@@ -167,25 +168,38 @@ class DataManager:
             return {}
 
     def __init__(self):
+        #  Cargar y preprocesar los datos usando la clase DataManager 
         self.maestros = DataManager._load_and_preprocess_excel('data/maestros.xlsx')
-        
+
         df_centros = self.maestros.get('centros', pd.DataFrame())
         df_trabajadores = self.maestros.get('trabajadores', pd.DataFrame())
+        df_maestro_centros = self.maestros.get('maestro_centros', pd.DataFrame())
         
-        if not df_trabajadores.empty and 'cod_crown' in df_trabajadores.columns:
+        # Merge de trabajadores con la información de centros para el nombre del jefe
+        if not df_trabajadores.empty and 'cod_crown' in df_trabajadores.columns and not df_centros.empty:
             df_trabajadores['cod_crown'] = df_trabajadores['cod_crown'].astype(str)
-        
-        if not df_centros.empty and not df_trabajadores.empty:
-            self.df_trabajadores = pd.merge(
+            df_trabajadores = pd.merge(
                 df_trabajadores,
                 df_centros[['codigo_centro', 'nombre_jefe_ope']],
                 left_on='cod_crown',
                 right_on='codigo_centro',
                 how='left'
             ).drop(columns='codigo_centro')
-        else:
-            self.df_trabajadores = df_trabajadores
+        
+        # Asegurarse de que las columnas a unir sean del mismo tipo (string)
+        if not df_maestro_centros.empty and 'centro_preferente' in df_trabajadores.columns and 'codigo_centro' in df_maestro_centros.columns:
+            df_trabajadores['centro_preferente'] = df_trabajadores['centro_preferente'].astype(str).str.replace('.0', '', regex=False)
+            df_maestro_centros['codigo_centro'] = df_maestro_centros['codigo_centro'].astype(str)
             
+            df_trabajadores = pd.merge(
+                df_trabajadores,
+                df_maestro_centros[['codigo_centro', 'nombre_centro']],
+                left_on='centro_preferente',
+                right_on='codigo_centro',
+                how='left'
+            ).rename(columns={'codigo_centro': 'codigo_centro_preferente', 'nombre_centro': 'nombre_centro_preferente'})
+        
+        self.df_trabajadores = df_trabajadores
         self.df_centros = df_centros
 
     def get_jefes(self) -> List[str]:
@@ -202,27 +216,25 @@ class DataManager:
         return sorted(self.df_trabajadores['nombre_empleado'].dropna().unique())
 
     def get_empleado_info(self, nombre_empleado: str) -> Dict:
-        if self.df_trabajadores.empty:
-            return {}
-        try:
-            empleado = self.df_trabajadores[self.df_trabajadores['nombre_empleado'] == nombre_empleado].iloc[0]
-            info = empleado.to_dict()
-            
-            default_values = {
-                'servicio': '',
-                'cat_empleado': '',
-                'cod_crown': '',
-                'centro_preferente': '',
-                'nombre_jefe_ope': ''
-            }
-            
-            for key, default_value in default_values.items():
-                if key not in info or pd.isna(info[key]) or info[key] == '':
-                    info[key] = default_value
-                    
-            return info
-        except (IndexError, KeyError):
-            return {}
+            if self.df_trabajadores.empty:
+                return {}
+            try:
+                empleado = self.df_trabajadores[self.df_trabajadores['nombre_empleado'] == nombre_empleado].iloc[0]
+                info = empleado.to_dict()
+                default_values = { 
+                    'servicio': '', 
+                    'cat_empleado': '', 
+                    'cod_crown': '', 
+                    'centro_preferente': '',
+                    'nombre_centro_preferente': '', 
+                    'nombre_jefe_ope': ''
+                }
+                for key, default_value in default_values.items():
+                    if key not in info or pd.isna(info[key]) or info[key] == '':
+                        info[key] = default_value
+                return info
+            except (IndexError, KeyError):
+                return {}
 
 class TablaUnificadaIncidencias:
     def __init__(self, data_manager: DataManager):
@@ -246,8 +258,15 @@ class TablaUnificadaIncidencias:
             trabajador_seleccionado = st.selectbox(
                 "Selecciona un trabajador para añadir:",
                 [""] + todos_empleados,
-                key="select_trabajador_unificado"
+                key="select_trabajador_unificado",
             )
+            if trabajador_seleccionado:
+                empleado_info = self.data_manager.get_empleado_info(trabajador_seleccionado)
+                cod_centro = empleado_info.get('centro_preferente', 'N/A')
+                nombre_centro = empleado_info.get('nombre_centro_preferente', 'N/A')
+                nombre_empresa = empleado_info.get('cod_empresa', 'N/A')
+                st.info(f"Centro: **{cod_centro} - {nombre_centro} - {nombre_empresa}**")
+
         with col2:
             num_rows = st.number_input(
                 "Número de filas:",
@@ -256,7 +275,7 @@ class TablaUnificadaIncidencias:
                 step=1,
                 key="num_rows_unificado"
             )
-        
+
         if st.button("➕ Añadir a la tabla"):
             self._add_incidencia(trabajador_seleccionado, num_rows, selected_jefe)
 
@@ -320,7 +339,7 @@ class TablaUnificadaIncidencias:
             "Nocturnidad_precio": st.column_config.NumberColumn("Noct. Precio", width="small", min_value=0),
             "Traslados_horas": st.column_config.NumberColumn("Trasl. Horas", width="small", min_value=0),
             "Traslados_precio": st.column_config.NumberColumn("Trasl. Precio", width="small", min_value=0),
-            "Fecha": st.column_config.DateColumn("Fecha", format="YYYY-MM-DD", required=True),
+            "Fecha": st.column_config.DateColumn("Fecha", format="DD-MM-YY", required=True),
             "Observaciones": st.column_config.TextColumn("Observaciones", required=True, width="medium"),
             "Centro preferente": st.column_config.NumberColumn("Centro Pref.", disabled=True),
             "Supervisor de operaciones": st.column_config.TextColumn("Supervisor", disabled=True),
@@ -337,7 +356,7 @@ class TablaUnificadaIncidencias:
             key="unificado_editor"
         )
         
-        st.caption("ℹ️ El campo 'Supervisor de operaciones' se completa automáticamente al seleccionar un trabajador.")
+        # st.caption("ℹ️ El campo 'Supervisor de operaciones' se completa automáticamente al seleccionar un trabajador.")
         
         # Botón para procesar los cambios después de que el usuario haya terminado de editar
         if st.button("💾 Guardar cambios"):
@@ -454,7 +473,6 @@ class IncidenciasApp:
 
     def _render_header(self, data_manager: DataManager):
         st.title("Plantilla de Registro de Incidencias")
-        st.markdown("Esta versión minimalista consolida todas las incidencias en una sola tabla para simplificar el proceso de registro.")
         
         imputacion_opciones = [""] + ["01 Enero", "02 Febrero", "03 Marzo", "04 Abril", "05 Mayo", "06 Junio", "07 Julio", "08 Agosto", "09 Septiembre", "10 Octubre", "11 Noviembre", "12 Diciembre"]
         jefes_list = data_manager.get_jefes()
@@ -488,16 +506,19 @@ class IncidenciasApp:
         monto_total_incidencias = sum(inc.incidencia_precio * inc.incidencia_horas for inc in incidencias_validas)
         monto_total_nocturnidad = sum(inc.nocturnidad_precio * inc.nocturnidad_horas for inc in incidencias_validas)
         monto_total_traslados = sum(inc.traslados_precio * inc.traslados_horas for inc in incidencias_validas)
+        monto_total_con_ss = monto_total_incidencias * 1.3195 + monto_total_nocturnidad * 1.3195 + monto_total_traslados
 
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4 , col5 = st.columns(5)
         with col1:
-            st.metric("📋 Monto total Incidencias", f"€{monto_total_incidencias:,.2f}")
+            st.metric("📋 Total Incidencias", f"€{monto_total_incidencias:,.2f}")
         with col2:
-            st.metric("✅ Monto total Nocturnidad", f"€{monto_total_nocturnidad:,.2f}")
+            st.metric("✅ Total Nocturnidad", f"€{monto_total_nocturnidad:,.2f}")
         with col3:
-            st.metric("⚠️ Monto total Traslados", f"€{monto_total_traslados:,.2f}")
+            st.metric("⚠️ Total Traslados", f"€{monto_total_traslados:,.2f}")
         with col4:
-            st.metric("🔧 Monto total", f"€{monto_total_incidencias + monto_total_nocturnidad + monto_total_traslados:,.2f}")
+            st.metric("🔧 Total", f"€{monto_total_incidencias + monto_total_nocturnidad + monto_total_traslados:,.2f}")
+        with col5:
+            st.metric("📁 Total coste", f"€{monto_total_con_ss:,.2f}")
 
         if not incidencias_validas:
             st.warning("⚠️ No hay incidencias válidas para exportar.")
