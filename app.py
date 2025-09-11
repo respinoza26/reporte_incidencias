@@ -438,24 +438,26 @@ class IncidenciasApp:
     def run(self):
         self._render_header()
 
-        if ValidationManager.is_director_validated():
-            self._render_director_view()
-        elif ValidationManager.is_jefe_validated():
-            self._render_jefe_validated_view()
+        # Condición para mostrar la interfaz principal
+        if st.session_state.selected_jefe and st.session_state.selected_imputacion:
+            if ValidationManager.is_director_validated():
+                self._render_director_view()
+            elif ValidationManager.is_jefe_validated():
+                self._render_jefe_validated_view()
+            else:
+                self._render_jefe_view()
         else:
-            self._render_jefe_view()
+            st.info("⚠️ Por favor, selecciona la imputación de nómina y un supervisor para comenzar.")
 
     def _render_jefe_view(self):
-        if not st.session_state.selected_jefe or not st.session_state.selected_imputacion:
-            st.warning("⚠️ Por favor, selecciona la imputación de nómina y un jefe para comenzar.")
-            return
-
+        # Lógica de renderizado corregida: sin código duplicado
         tabla_unificada = TablaUnificadaIncidencias(self.data_manager)
         tabla_unificada.render(st.session_state.selected_jefe)
         self._render_export_section()
 
         if st.button("✅ Validar y Enviar al Director"):
             ValidationManager.set_jefe_validated(True)
+            st.session_state.incidencias_validadas = st.session_state.incidencias
             st.success("¡Datos validados y enviados para la aprobación final!")
             st.rerun()
 

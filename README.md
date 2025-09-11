@@ -2,6 +2,13 @@
 
 ### README.md
 
+Hay un priblema porque se queda deteneida con el ingrso de inputacion y jefe
+
+
+
+
+
+
 ### Plantilla de Registro de Incidencias con Streamlit 📋
 
 Este proyecto es una aplicación web interactiva desarrollada con **Streamlit** para simplificar y centralizar el registro de incidencias de personal. Está diseñada para ser utilizada por jefes de operaciones, permitiéndoles gestionar incidencias de su personal a cargo y también de personal de otros centros.
