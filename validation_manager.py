@@ -27,13 +27,12 @@ class ValidationManager:
     def set_jefe_validated(status: bool):
         st.session_state.validation_state['jefe_validated'] = status
         if status:
-            # Si el jefe valida, guarda una copia de las incidencias para el director
             st.session_state.incidencias_validadas = st.session_state.incidencias.copy()
-            
+
     @staticmethod
     def set_director_validated(status: bool):
         st.session_state.validation_state['director_validated'] = status
-        
+
     @staticmethod
     def reset_state():
         st.session_state.validation_state['jefe_validated'] = False
