@@ -520,7 +520,7 @@ class OptimizedTablaIncidencias:
             column_config=column_config,
             width='stretch',
             num_rows="fixed",
-            height=1000,  # Altura máxima recomendada
+            # height=1000,  # Altura máxima recomendada
             key=f"unificado_editor_page_{st.session_state.get('current_page', 1)}"
 )
 
