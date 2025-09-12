@@ -1,4 +1,8 @@
-
+import pandas as pd
+import streamlit as st
+from typing import List, Dict, Tuple
+from modules.cache_utils import _load_single_sheet
+from models import preprocess_centros, preprocess_trabajadores, preprocess_tarifas_incidencias, preprocess_maestro_centros
 
 # =============================================================================
 # DATA MANAGER OPTIMIZADO

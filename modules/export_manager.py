@@ -1,4 +1,10 @@
 
+import io
+from typing import List, Optional
+import pandas as pd
+from data_manager import OptimizedDataManager
+from models import Incidencia
+from cache_utils import _load_single_sheet
 
 
 # =============================================================================

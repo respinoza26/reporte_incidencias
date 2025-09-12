@@ -1,3 +1,8 @@
+import numpy as np
+import pandas as pd
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Optional, Dict
 
 
 def preprocess_centros(df: pd.DataFrame) -> pd.DataFrame:
