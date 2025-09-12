@@ -3,83 +3,21 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import io
-from typing import List, Dict, Optional
-from dataclasses import dataclass
-from validation_manager import ValidationManager
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
+import sqlite3
+import hashlib
+import pickle
+from dataclasses import dataclass, field
+from typing import List, Dict, Optional, Tuple, Any
 
-st.set_page_config(
-    page_title="Registro de Incidencias",
-    page_icon="📋",
-    layout="wide"
-)
+# =============================================================================
+# MODELO DE DATOS
+# =============================================================================
 
-# --- Funciones de Preprocesamiento de Datos (Sin Cambios) ---
-def preprocess_centros(df: pd.DataFrame) -> pd.DataFrame:
-    df.columns = [
-        'codigo_centro', 'nombre_centro', 'cod_jefe', 'nombre_jefe_ope',
-        'fecha_alta_centro', 'fecha_baja_centro', 'cod_centro_preferente',
-        'desc_centro_preferente', 'almacen_centro'
-    ]
-    df = df[df['fecha_baja_centro'].isna()] \
-           .drop(columns=['fecha_baja_centro', 'fecha_alta_centro', 'almacen_centro'])
-    df = df[df['cod_jefe'].notna()]
-    return df
-
-def preprocess_trabajadores(df: pd.DataFrame) -> pd.DataFrame:
-    df.columns = df.columns.str.strip().str.replace('\n', ' ')
-
-    df = df.rename(columns={
-        'Empresa': 'cod_empresa',
-        'Empleado - Código': 'cod_empleado',
-        'Nombre empleado': 'nombre_empleado',
-        'Nombre de la empresa': 'nombre_empresa',
-        'Código contrato': 'cod_contrato',
-        'Contrato': 'tipo_contrato',
-        'Porcentaje de jornada': 'porcen_contrato',
-        'Sección': 'desc_seccion',
-        'Categoría': 'cat_empleado',
-        'Código sección': 'cod_seccion',
-        'Departamento': 'desc_dpto',
-        'Puesto de trabajo': 'puesto_empleado',
-        'coste hora  empresa': 'coste_hora_empresa',
-        'empresa/seccion': 'empresa_codigo',
-        'codigo Cwon': 'cod_crown',
-        'Nombre Código Crown': 'nombre_cod_crown',
-        'empresa2': 'nombre_empresa_final',
-        'centro preferente': 'centro_preferente'
-    })
-
-    if 'cod_empresa' in df.columns:
-        df['cod_empresa'] = np.select(
-            [
-                df['cod_empresa'].astype(str).str.startswith('20', na=False),
-                df['cod_empresa'].astype(str).str.startswith('19', na=False),
-                df['cod_empresa'].astype(str).str.startswith('50', na=False)
-            ],
-            ['SMI', 'ALGADI', 'DISTEGSA'], default='Otros'
-        )
-
-    if 'nombre_empleado' in df.columns:
-        df['nombre_empleado'] = df['nombre_empleado'].str.upper()
-
-    if 'servicio' not in df.columns and 'cat_empleado' in df.columns:
-        df['servicio'] = np.where(
-            df['cat_empleado'].str.contains('limp|asl', case=False, na=False),
-            '020 Limpieza',
-            '010 Restauración'
-        )
-
-    return df
-
-def preprocess_maestro_centros(df: pd.DataFrame) -> pd.DataFrame:
-    df = df[['ccentro', 'dcentro', 'centropref']]
-    df.columns = ['codigo_centro', 'nombre_centro', 'cod_centro_preferente']
-    return df
-
-def preprocess_tarifas_incidencias(df: pd.DataFrame) -> pd.DataFrame:
-    return df
-
-# --- Clases de Datos y Lógica (Sin Cambios) ---
 @dataclass
 class Incidencia:
     trabajador: str = ""
@@ -93,478 +31,508 @@ class Incidencia:
     incidencia_precio: float = 0.0
     nocturnidad_horas: float = 0.0
     nocturnidad_precio: float = 0.0
-    traslados_horas: float = 0.0
-    traslados_precio: float = 0.0
+    traslados_total: float = 0.0
+    coste_hora: float = 0.0
     fecha: Optional[datetime] = None
     observaciones: str = ""
     centro_preferente: Optional[int] = None
     nombre_jefe_ope: str = ""
     categoria: str = ""
     servicio: str = ""
-
+    cod_reg_convenio: str = ""
+    
     def to_dict(self) -> Dict:
         return {
-            "Borrar": False,
-            "Trabajador": self.trabajador,
-            "Imputación Nómina": self.imputacion_nomina,
-            "Facturable": self.facturable,
-            "Motivo": self.motivo,
-            "Código Crown Origen": self.codigo_crown_origen,
-            "Código Crown Destino": self.codigo_crown_destino,
-            "Empresa Destino": self.empresa_destino,
-            "Incidencia_horas": self.incidencia_horas,
-            "Incidencia_precio": self.incidencia_precio,
-            "Nocturnidad_horas": self.nocturnidad_horas,
-            "Nocturnidad_precio": self.nocturnidad_precio,
-            "Traslados_horas": self.traslados_horas,
-            "Traslados_precio": self.traslados_precio,
-            "Fecha": self.fecha,
-            "Observaciones": self.observaciones,
-            "Centro preferente": self.centro_preferente,
-            "Supervisor de operaciones": self.nombre_jefe_ope,
-            "Categoría": self.categoria,
-            "Servicio": self.servicio
+            "trabajador": self.trabajador,
+            "imputacion_nomina": self.imputacion_nomina,
+            "facturable": self.facturable,
+            "motivo": self.motivo,
+            "codigo_crown_origen": self.codigo_crown_origen,
+            "codigo_crown_destino": self.codigo_crown_destino,
+            "empresa_destino": self.empresa_destino,
+            "incidencia_horas": self.incidencia_horas,
+            "incidencia_precio": self.incidencia_precio,
+            "nocturnidad_horas": self.nocturnidad_horas,
+            "nocturnidad_precio": self.nocturnidad_precio,
+            "traslados_total": self.traslados_total,
+            "coste_hora": self.coste_hora,
+            "fecha": self.fecha.strftime('%Y-%m-%d') if self.fecha else None,
+            "observaciones": self.observaciones,
+            "centro_preferente": self.centro_preferente,
+            "nombre_jefe_ope": self.nombre_jefe_ope,
+            "categoria": self.categoria,
+            "servicio": self.servicio,
+            "cod_reg_convenio": self.cod_reg_convenio,
         }
 
-    def is_valid(self) -> bool:
-        required_fields = [
-            self.trabajador, self.imputacion_nomina, self.facturable,
-            self.motivo, self.codigo_crown_destino, self.fecha, self.observaciones
-        ]
-        return all(field is not None and field != "" and (not isinstance(field, (float, int)) or field > 0 or field == 0) for field in required_fields)
+# =============================================================================
+# FUNCIONES DE PREPROCESAMIENTO
+# =============================================================================
 
-
-@st.cache_data
-def load_and_preprocess_excel(file_path: str) -> Dict[str, pd.DataFrame]:
+def _preprocess_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Preprocesa un DataFrame estandarizando los nombres de columna."""
+    if df.empty:
+        return df
     try:
-        preprocessors = {
-            'centros': preprocess_centros,
-            'trabajadores': preprocess_trabajadores,
-            'maestro_centros': preprocess_maestro_centros,
-            'tarifas_incidencias': preprocess_tarifas_incidencias,
-            'cuenta_motivos': lambda df: df,
-        }
-        xls = pd.ExcelFile(file_path)
-        sheets_df = {}
-        for sheet_name in xls.sheet_names:
-            if sheet_name == 'tarifas_incidencias':
-                df = pd.read_excel(xls, sheet_name=sheet_name, skiprows=3, usecols="A:C")
-            elif sheet_name == 'cuenta_motivos':
-                df = pd.read_excel(xls, sheet_name=sheet_name)
-            else:
-                df = pd.read_excel(xls, sheet_name=sheet_name)
-            if sheet_name in preprocessors:
-                df = preprocessors[sheet_name](df)
-            sheets_df[sheet_name] = df
-        return sheets_df
-    except FileNotFoundError:
-        st.error(f"Error: El archivo '{file_path}' no se encuentra.")
-        return {}
+        df.columns = df.iloc[0].astype(str).str.strip()
+        return df.iloc[1:].copy()
     except Exception as e:
-        st.error(f"Error leyendo el archivo Excel: {e}")
+        st.error(f"Error durante el preprocesamiento de la hoja. Es posible que el formato no sea el esperado. Error: {e}")
+        return pd.DataFrame()
+
+# =============================================================================
+# DATA MANAGER OPTIMIZADO
+# =============================================================================
+
+@st.cache_data(ttl=3600)
+def _load_all_sheets(file_data: Any) -> Dict[str, pd.DataFrame]:
+    """Carga todas las hojas de un archivo de Excel y las preprocesa."""
+    sheets = {}
+    if not file_data:
+        return sheets
+    try:
+        file_buffer = io.BytesIO(file_data.getvalue())
+        with pd.ExcelFile(file_buffer) as xls:
+            for sheet_name in xls.sheet_names:
+                df = pd.read_excel(xls, sheet_name=sheet_name, header=None)
+                if not df.empty:
+                    sheets[sheet_name] = _preprocess_df(df)
+                else:
+                    st.warning(f"La hoja '{sheet_name}' está vacía y no se pudo cargar.")
+    except Exception as e:
+        st.error(f"Error cargando el archivo de Excel. Asegúrate de que sea un archivo .xlsx válido. Error: {e}")
         return {}
+    return sheets
 
-class DataManager:
-    def __init__(self):
-        self.maestros = load_and_preprocess_excel('data/maestros.xlsx')
+class OptimizedDataManager:
+    def __init__(self, uploaded_file: Any):
+        self._cache = {}
+        self._uploaded_file = uploaded_file
+        self._ensure_cache_built()
 
-        df_centros = self.maestros.get('centros', pd.DataFrame())
-        df_trabajadores = self.maestros.get('trabajadores', pd.DataFrame())
-        df_maestro_centros = self.maestros.get('maestro_centros', pd.DataFrame())
+    def _ensure_cache_built(self):
+        if not self._cache and self._uploaded_file:
+            self._cache = _load_all_sheets(self._uploaded_file)
+        elif not self._uploaded_file:
+             st.warning("⚠️ No se ha subido ningún archivo maestro.")
 
-        if not df_trabajadores.empty and 'cod_crown' in df_trabajadores.columns and not df_centros.empty:
-            df_trabajadores['cod_crown'] = df_trabajadores['cod_crown'].astype(str)
-            df_trabajadores = pd.merge(
-                df_trabajadores,
-                df_centros[['codigo_centro', 'nombre_jefe_ope']],
-                left_on='cod_crown',
-                right_on='codigo_centro',
-                how='left'
-            ).drop(columns='codigo_centro')
-
-        if not df_maestro_centros.empty and 'centro_preferente' in df_trabajadores.columns and 'codigo_centro' in df_maestro_centros.columns:
-            df_trabajadores['centro_preferente'] = df_trabajadores['centro_preferente'].astype(str).str.replace('.0', '', regex=False)
-            df_maestro_centros['codigo_centro'] = df_maestro_centros['codigo_centro'].astype(str)
-
-            df_trabajadores = pd.merge(
-                df_trabajadores,
-                df_maestro_centros[['codigo_centro', 'nombre_centro']],
-                left_on='centro_preferente',
-                right_on='codigo_centro',
-                how='left'
-            ).rename(columns={'codigo_centro': 'codigo_centro_preferente', 'nombre_centro': 'nombre_centro_preferente'})
-
-        self.df_trabajadores = df_trabajadores
-        self.df_centros = df_centros
+    def get_df(self, sheet_name: str) -> pd.DataFrame:
+        df = self._cache.get(sheet_name, pd.DataFrame())
+        if df.empty and st.session_state.debug_mode:
+            st.warning(f"La hoja '{sheet_name}' no se pudo cargar o está vacía.")
+        return df.copy()
 
     def get_jefes(self) -> List[str]:
-        jefes = set()
-        if not self.df_centros.empty and 'nombre_jefe_ope' in self.df_centros.columns:
-            jefes.update(self.df_centros['nombre_jefe_ope'].dropna().unique())
-        if not self.df_trabajadores.empty and 'nombre_jefe_ope' in self.df_trabajadores.columns:
-            jefes.update(self.df_trabajadores['nombre_jefe_ope'].dropna().unique())
-        return sorted(list(jefes))
-
-    def get_all_employees(self) -> List[str]:
-        if self.df_trabajadores.empty:
+        df = self.get_df("centros")
+        try:
+            if "Jefe de operaciones (Descripción)" in df.columns:
+                return sorted(df["Jefe de operaciones (Descripción)"].dropna().unique().tolist())
+            else:
+                st.error("Columna 'Jefe de operaciones (Descripción)' no encontrada en la hoja 'centros'.")
+                return []
+        except Exception as e:
+            st.error(f"Error al obtener la lista de jefes. Error: {e}")
             return []
-        return sorted(self.df_trabajadores['nombre_empleado'].dropna().unique())
 
-    def get_empleado_info(self, nombre_empleado: str) -> Dict:
-            if self.df_trabajadores.empty:
-                return {}
-            try:
-                empleado = self.df_trabajadores[self.df_trabajadores['nombre_empleado'] == nombre_empleado].iloc[0]
-                info = empleado.to_dict()
-                default_values = { 
-                    'servicio': '', 
-                    'cat_empleado': '', 
-                    'cod_crown': '', 
-                    'centro_preferente': '',
-                    'nombre_centro_preferente': '', 
-                    'nombre_jefe_ope': ''
-                }
-                for key, default_value in default_values.items():
-                    if key not in info or pd.isna(info[key]) or info[key] == '':
-                        info[key] = default_value
-                return info
-            except (IndexError, KeyError):
-                return {}
+    def get_imputaciones(self) -> List[str]:
+        if self._uploaded_file:
+            return [self._uploaded_file.name]
+        return []
 
-class TablaUnificadaIncidencias:
-    def __init__(self, data_manager: DataManager):
-        self.data_manager = data_manager
+    def get_trabajadores_by_jefe(self, jefe_name: str) -> pd.DataFrame:
+        df = self.get_df("trabajadores")
+        return df.copy()
 
-    def render(self, selected_jefe: str) -> None:
-        st.header("📋 Registro de Incidencias de Personal")
-
-        incidencias = st.session_state.incidencias
-
-        with st.expander("Añadir Nueva Incidencia"):
-            self._render_add_form(selected_jefe)
-
-        self._render_main_table(incidencias, selected_jefe)
-
-    def _render_add_form(self, selected_jefe: str) -> None:
-        todos_empleados = self.data_manager.get_all_employees()
-
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            trabajador_seleccionado = st.selectbox(
-                "Selecciona un trabajador para añadir:",
-                [""] + todos_empleados,
-                key="select_trabajador_unificado",
-            )
-            if trabajador_seleccionado:
-                empleado_info = self.data_manager.get_empleado_info(trabajador_seleccionado)
-                cod_centro = empleado_info.get('centro_preferente', 'N/A')
-                nombre_centro = empleado_info.get('nombre_centro_preferente', 'N/A')
-                nombre_empresa = empleado_info.get('cod_empresa', 'N/A')
-                st.info(f"Centro: **{cod_centro} - {nombre_centro} - {nombre_empresa}**")
-
-        with col2:
-            num_rows = st.number_input(
-                "Número de filas:",
-                min_value=1,
-                value=1,
-                step=1,
-                key="num_rows_unificado"
-            )
-
-        if st.button("➕ Añadir a la tabla"):
-            self._add_incidencia(trabajador_seleccionado, num_rows, selected_jefe)
-
-    def _add_incidencia(self, nombre_trabajador: str, num_rows: int, selected_jefe: str) -> None:
-        if not nombre_trabajador:
-            st.warning("⚠️ Por favor, selecciona un trabajador.")
-            return
-
-        incidents = st.session_state.incidencias 
-
-        for _ in range(num_rows):
-            incidencia = Incidencia(imputacion_nomina=st.session_state.selected_imputacion)
-            self._actualizar_datos_empleado(incidencia, nombre_trabajador, selected_jefe)
-            incidents.append(incidencia)
-
-        st.session_state.incidencias = incidents
-        st.success(f"Agregado {num_rows} fila(s) para {nombre_trabajador}")
-        st.rerun()
-
-    def _actualizar_datos_empleado(self, incidencia: Incidencia, nombre_trabajador: str, jefe: str):
-        if nombre_trabajador:
-            empleado_info = self.data_manager.get_empleado_info(nombre_trabajador)
-            if empleado_info:
-                incidencia.trabajador = empleado_info.get('nombre_empleado', '')
-                incidencia.categoria = empleado_info.get('cat_empleado', '')
-                incidencia.servicio = empleado_info.get('servicio', '')
-                incidencia.centro_preferente = empleado_info.get('centro_preferente')
-                incidencia.codigo_crown_origen = empleado_info.get('cod_crown')
-
-                empleado_jefe = empleado_info.get('nombre_jefe_ope', '')
-                incidencia.nombre_jefe_ope = empleado_jefe if empleado_jefe else "N/A"
-
-    def _render_main_table(self, incidencias: List[Incidencia], selected_jefe: str) -> None:
-        for incidencia in incidencias:
-            if incidencia.trabajador:
-                self._actualizar_datos_empleado(incidencia, incidencia.trabajador, selected_jefe)
-
-        df = pd.DataFrame([inc.to_dict() for inc in incidencias])
-        if not df.empty:
-            df['Fecha'] = pd.to_datetime(df['Fecha'], errors='coerce')
-
-        todos_empleados = self.data_manager.get_all_employees()
-
-        centros_crown = [""] + sorted(self.data_manager.df_centros['codigo_centro'].dropna().astype(int).unique().tolist())
-
-        column_config = {
-            "Borrar": st.column_config.CheckboxColumn("Borrar", help="Selecciona las filas a borrar", default=False),
-            "Trabajador": st.column_config.SelectboxColumn("Trabajador", options=[""] + todos_empleados, required=True, width="medium"),
-            "Imputación Nómina": st.column_config.SelectboxColumn("Imputación Nómina", options=[""] + ["01 Enero", "02 Febrero", "03 Marzo", "04 Abril", "05 Mayo", "06 Junio", "07 Julio", "08 Agosto", "09 Septiembre", "10 Octubre", "11 Noviembre", "12 Diciembre"], required=True, width="small", disabled=True),
-            "Facturable": st.column_config.SelectboxColumn("Facturable", options=["", "Sí", "No"], required=True, width="small"),
-            "Motivo": st.column_config.SelectboxColumn("Motivo", options=["Absentismo", "Refuerzo", "Eventos", "Festivos y Fines de Semana", "Permiso retribuido", "Puesto pendiente de cubrir","Formación","Otros","Nocturnidad"], required=True, width="small"),
-            "Código Crown Origen": st.column_config.NumberColumn("Crown Origen", disabled=True),
-            "Código Crown Destino": st.column_config.SelectboxColumn("Crown Destino", options=centros_crown, required=True, width="small"),
-            "Empresa Destino": st.column_config.SelectboxColumn("Empresa Destino", options=["", "ALGADI","SMI","DISTEGSA"], width="small"),
-            "Incidencia_horas": st.column_config.NumberColumn("Inc. Horas", width="small", min_value=0),
-            "Incidencia_precio": st.column_config.NumberColumn("Inc. Precio", width="small", min_value=0),
-            "Nocturnidad_horas": st.column_config.NumberColumn("Noct. Horas", width="small", min_value=0),
-            "Nocturnidad_precio": st.column_config.NumberColumn("Noct. Precio", width="small", min_value=0),
-            "Traslados_horas": st.column_config.NumberColumn("Trasl. Horas", width="small", min_value=0),
-            "Traslados_precio": st.column_config.NumberColumn("Trasl. Precio", width="small", min_value=0),
-            "Fecha": st.column_config.DateColumn("Fecha", format="DD-MM-YY", required=True),
-            "Observaciones": st.column_config.TextColumn("Observaciones", required=True, width="medium"),
-            "Centro preferente": st.column_config.NumberColumn("Centro Pref.", disabled=True),
-            "Supervisor de operaciones": st.column_config.TextColumn("Supervisor", disabled=True),
-            "Categoría": st.column_config.TextColumn("Categoría", disabled=True, width="small"),
-            "Servicio": st.column_config.TextColumn("Servicio", disabled=True, width="small"),
-        }
-
-        st.data_editor(
-            df,
-            column_config=column_config,
-            width='stretch',
-            num_rows="fixed",
-            key="unificado_editor"
-        )
-
-        if st.button("💾 Guardar cambios"):
-            edited_rows = st.session_state["unificado_editor"]["edited_rows"]
-            incidents_to_update = st.session_state.incidencias
-
-            for row_idx, row_data in edited_rows.items():
-                if row_data.get('Borrar', False):
-                    continue
-
-                incidencia = incidents_to_update[row_idx]
-
-                if "Trabajador" in row_data and row_data["Trabajador"]:
-                    self._actualizar_datos_empleado(incidencia, row_data["Trabajador"], selected_jefe)
-
-                for field_name, value in row_data.items():
-                    if field_name == "Trabajador":
-                        continue
-                    attr_map = {
-                        "Imputación Nómina": "imputacion_nomina",
-                        "Facturable": "facturable",
-                        "Motivo": "motivo",
-                        "Código Crown Destino": "codigo_crown_destino",
-                        "Empresa Destino": "empresa_destino",
-                        "Incidencia_horas": "incidencia_horas",
-                        "Incidencia_precio": "incidencia_precio",
-                        "Nocturnidad_horas": "nocturnidad_horas",
-                        "Nocturnidad_precio": "nocturnidad_precio",
-                        "Traslados_horas": "traslados_horas",
-                        "Traslados_precio": "traslados_precio",
-                        "Fecha": "fecha",
-                        "Observaciones": "observaciones"
-                    }
-                    if field_name in attr_map:
-                        setattr(incidencia, attr_map[field_name], value)
-
-            new_incidents = [inc for i, inc in enumerate(incidents_to_update) if not edited_rows.get(i, {}).get("Borrar", False)]
-            st.session_state.incidencias = new_incidents
-            st.success("✅ ¡Cambios guardados con éxito!")
-            st.rerun()
-
-class ExportManager:
-    @staticmethod
-    def export_to_excel(incidencias: List[Incidencia], data_manager: DataManager) -> Optional[bytes]:
-        incidencias_validas = [inc for inc in incidencias if inc.is_valid()]
-        if not incidencias_validas:
+    def get_cod_crown(self, centro_preferente: str) -> Optional[int]:
+        df = self.get_df("centros")
+        try:
+            if "Centro preferente (Códigos)" in df.columns and "Código" in df.columns:
+                result = df[df['Centro preferente (Códigos)'] == centro_preferente]['Código'].values
+                if result.size > 0:
+                    return int(result[0])
+            return None
+        except Exception as e:
+            st.error(f"Error al obtener el código Crown para el centro preferente {centro_preferente}. Error: {e}")
             return None
 
-        data = []
-        for inc in incidencias_validas:
-            data.append({
-                'jefe_ope': inc.nombre_jefe_ope,
-                'nombre_empleado': inc.trabajador,
-                'imputacion_nomina': inc.imputacion_nomina,
-                'facturable': inc.facturable,
-                'motivo': inc.motivo,
-                'codigo_crown_origen': inc.codigo_crown_origen,
-                'codigo_crown_destino': inc.codigo_crown_destino,
-                'empresa_destino': inc.empresa_destino,
-                'incidencia_horas': inc.incidencia_horas,
-                'incidencia_precio': inc.incidencia_precio,
-                'nocturnidad_horas': inc.nocturnidad_horas,
-                'nocturnidad_precio': inc.nocturnidad_precio,
-                'traslados_horas': inc.traslados_horas,
-                'traslados_precio': inc.traslados_precio,
-                'fecha': inc.fecha,
-                'observaciones': inc.observaciones,
-                'centro_preferente': inc.centro_preferente,
-                'categoria': inc.categoria,
-                'servicio': inc.servicio,
-            })
+    def get_empresa_destino(self, cod_crown: int) -> Optional[str]:
+        df = self.get_df("maestro_centros")
+        try:
+            if "ccentro" in df.columns and "dcentro" in df.columns:
+                result = df[df["ccentro"] == str(cod_crown)]["dcentro"].values
+                if result.size > 0:
+                    return result[0]
+            return None
+        except Exception as e:
+            st.error(f"Error al obtener la empresa de destino para el código Crown {cod_crown}. Error: {e}")
+            return None
 
-        df = pd.DataFrame(data)
-        df_motivos = data_manager.maestros.get('cuenta_motivos', pd.DataFrame())
+    def get_precios_incidencia(self, cod_reg_convenio: str, servicio: str) -> Tuple[float, float]:
+        df = self.get_df("tarifas_incidencias")
+        # Aquí iría la lógica para buscar en la hoja "tarifas_incidencias"
+        # Por ahora, devolvemos valores por defecto
+        return 15.0, 20.0
 
-        if not df_motivos.empty and 'Motivo' in df_motivos.columns and 'desc_cuenta' in df_motivos.columns:
-            motivo_map = dict(zip(df_motivos['Motivo'], df_motivos['desc_cuenta']))
-            df['cuenta_motivos'] = df['motivo'].map(motivo_map).fillna("N/A")
+    def get_precio_nocturnidad(self, categoria: str, cod_reg_convenio: str) -> float:
+        df = self.get_df("tarifas_incidencias")
+        # Aquí iría la lógica para buscar el precio de nocturnidad
+        # Por ahora, devolvemos un valor por defecto
+        return 5.0
 
+# =============================================================================
+# GESTOR DE BASE DE DATOS
+# =============================================================================
 
-        excel_buffer = io.BytesIO()
-        df.to_excel(excel_buffer, index=False, engine='openpyxl')
-        excel_buffer.seek(0)
-        return excel_buffer.getvalue()
+class DatabaseManager:
+    def __init__(self, db_path='incidencias.db'):
+        self.db_path = db_path
+        self._create_table()
 
-class IncidenciasApp:
-    def __init__(self, data_manager: DataManager):
-        ValidationManager.init_session_state()
-        self.data_manager = data_manager
-
-    def run(self):
-        self._render_header()
-
-        # Condición para mostrar la interfaz principal
-        if st.session_state.selected_jefe and st.session_state.selected_imputacion:
-            if ValidationManager.is_director_validated():
-                self._render_director_view()
-            elif ValidationManager.is_jefe_validated():
-                self._render_jefe_validated_view()
-            else:
-                self._render_jefe_view()
-        else:
-            st.info("⚠️ Por favor, selecciona la imputación de nómina y un supervisor para comenzar.")
-
-    def _render_jefe_view(self):
-        # Lógica de renderizado corregida: sin código duplicado
-        tabla_unificada = TablaUnificadaIncidencias(self.data_manager)
-        tabla_unificada.render(st.session_state.selected_jefe)
-        self._render_export_section()
-
-        if st.button("✅ Validar y Enviar al Director"):
-            ValidationManager.set_jefe_validated(True)
-            st.session_state.incidencias_validadas = st.session_state.incidencias
-            st.success("¡Datos validados y enviados para la aprobación final!")
-            st.rerun()
-
-    def _render_jefe_validated_view(self):
-        st.success(f"✅ ¡Datos validados por el jefe {st.session_state.selected_jefe}!")
-        st.info("Ahora, los datos están a la espera de la aprobación del director.")
-        self._render_export_section()
-        if st.button("🔄 Reiniciar Proceso (Volver a editar)"):
-            ValidationManager.reset_state()
-            st.rerun()
-
-    def _render_director_view(self):
-        st.success("✅ ¡Datos APROBADOS por el director!")
-        st.balloons()
-
-        incidencias_validadas = st.session_state.incidencias_validadas
-        if incidencias_validadas:
-            df = pd.DataFrame([inc.to_dict() for inc in incidencias_validadas])
-            st.subheader("Datos Validados")
-            st.dataframe(df.drop(columns=["Borrar"]), use_container_width=True)
-            self._render_export_section(incidencias_validadas)
-        else:
-            st.warning("No hay datos validados para mostrar.")
-
-        if st.button("🔄 Iniciar Nuevo Mes"):
-            ValidationManager.reset_state()
-            st.session_state.incidencias_validadas = []
-            st.rerun()
-
-    def _handle_imputacion_change(self):
-        st.session_state.selected_imputacion = st.session_state.imputacion_nomina_main
-        st.session_state.incidencias = []
-        ValidationManager.reset_state()
-
-    def _handle_jefe_change(self):
-        st.session_state.selected_jefe = st.session_state.jefe_main
-        st.session_state.incidencias = []
-        ValidationManager.reset_state()
-
-    def _render_header(self):
-        st.title("Plantilla de Registro de Incidencias")
-
-        imputacion_opciones = [""] + ["01 Enero", "02 Febrero", "03 Marzo", "04 Abril", "05 Mayo", "06 Junio", "07 Julio", "08 Agosto", "09 Septiembre", "10 Octubre", "11 Noviembre", "12 Diciembre"]
-        jefes_list = self.data_manager.get_jefes()
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.selectbox(
-                "📅 Imputación Nómina:",
-                imputacion_opciones,
-                index=imputacion_opciones.index(st.session_state.selected_imputacion) if st.session_state.selected_imputacion in imputacion_opciones else 0,
-                key="imputacion_nomina_main",
-                on_change=self._handle_imputacion_change
+    def _create_table(self):
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS incidencias (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trabajador TEXT,
+                imputacion_nomina TEXT,
+                facturable TEXT,
+                motivo TEXT,
+                codigo_crown_origen TEXT,
+                codigo_crown_destino TEXT,
+                empresa_destino TEXT,
+                incidencia_horas REAL,
+                incidencia_precio REAL,
+                nocturnidad_horas REAL,
+                nocturnidad_precio REAL,
+                traslados_total REAL,
+                coste_hora REAL,
+                fecha TEXT,
+                observaciones TEXT,
+                centro_preferente TEXT,
+                nombre_jefe_ope TEXT,
+                categoria TEXT,
+                servicio TEXT,
+                cod_reg_convenio TEXT,
+                estado TEXT DEFAULT 'pending_supervisor_submission',
+                timestamp TEXT
             )
-        with col2:
-            st.selectbox(
-                "👤 Selecionar nombre de supervisor:", 
-                [""] + jefes_list,
-                index=jefes_list.index(st.session_state.selected_jefe) + 1 if st.session_state.selected_jefe in jefes_list else 0,
-                key="jefe_main",
-                on_change=self._handle_jefe_change
-            )
+        ''')
+        conn.commit()
+        conn.close()
 
-    def _render_export_section(self, incidencias_list: Optional[List[Incidencia]] = None):
-        st.markdown("---")
-        st.header("📊 Exportar Datos")
+    def add_incidencia(self, incidencia: Incidencia):
+        conn = sqlite3.connect(self.db_path)
+        incidencia_dict = incidencia.to_dict()
+        incidencia_dict['estado'] = 'pending_supervisor_submission'
+        incidencia_dict['timestamp'] = datetime.now().isoformat()
+        
+        df = pd.DataFrame([incidencia_dict])
+        df.to_sql('incidencias', conn, if_exists='append', index=False)
+        conn.close()
 
-        incidencias_validas = incidencias_list or [inc for inc in st.session_state.incidencias if inc.is_valid()]
+    def get_incidencias_by_estado(self, estado: str) -> pd.DataFrame:
+        conn = sqlite3.connect(self.db_path)
+        query = f"SELECT * FROM incidencias WHERE estado = '{estado}'"
+        df = pd.read_sql_query(query, conn)
+        conn.close()
+        return df
+    
+    def update_incidencias_estado(self, ids: List[int], new_estado: str):
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        try:
+            for id in ids:
+                c.execute("UPDATE incidencias SET estado = ? WHERE id = ?", (new_estado, id))
+            conn.commit()
+        except Exception as e:
+            st.error(f"Error al actualizar el estado de las incidencias. Error: {e}")
+        finally:
+            conn.close()
 
-        monto_total_incidencias = sum(inc.incidencia_precio * inc.incidencia_horas for inc in incidencias_validas)
-        monto_total_nocturnidad = sum(inc.nocturnidad_precio * inc.nocturnidad_horas for inc in incidencias_validas)
-        monto_total_traslados = sum(inc.traslados_precio * inc.traslados_horas for inc in incidencias_validas)
-        monto_total_con_ss = monto_total_incidencias * 1.3195 + monto_total_nocturnidad * 1.3195 + monto_total_traslados
+    def update_incidencia(self, incidencia_id: int, data: Dict):
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        try:
+            fields = ', '.join([f"{col} = ?" for col in data.keys()])
+            values = list(data.values())
+            values.append(incidencia_id)
+            c.execute(f"UPDATE incidencias SET {fields} WHERE id = ?", values)
+            conn.commit()
+        except Exception as e:
+            st.error(f"Error al guardar los cambios en la incidencia. Error: {e}")
+        finally:
+            conn.close()
 
-        col1, col2, col3, col4, col5 = st.columns(5)
-        with col1:
-            st.metric("📋 Total Incidencias", f"€{monto_total_incidencias:,.2f}")
-        with col2:
-            st.metric("✅ Total Nocturnidad", f"€{monto_total_nocturnidad:,.2f}")
-        with col3:
-            st.metric("⚠️ Total Traslados", f"€{monto_total_traslados:,.2f}")
-        with col4:
-            st.metric("🔧 Total", f"€{monto_total_incidencias + monto_total_nocturnidad + monto_total_traslados:,.2f}")
-        with col5:
-            st.metric("📁 Total coste", f"€{monto_total_con_ss:,.2f}")
+# =============================================================================
+# EXPORT MANAGER
+# =============================================================================
 
-        if not incidencias_validas:
-            st.warning("⚠️ No hay incidencias válidas para exportar.")
-            st.info("💡 Complete todos los campos obligatorios: Trabajador, Imputación Nómina, Facturable, Motivo, Código Crown Destino, Fecha y Observaciones.")
+class OptimizedExportManager:
+    @staticmethod
+    def export_to_excel(incidencias: List[Dict], sheet_name: Optional[str] = "Incidencias"):
+        if not incidencias:
+            st.warning("No hay incidencias para exportar.")
+            return None
+
+        df = pd.DataFrame(incidencias)
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+            df.to_excel(writer, sheet_name=sheet_name, index=False)
+        return buffer.getvalue()
+
+# =============================================================================
+# TABLA Y VISTAS DE USUARIO
+# =============================================================================
+
+class OptimizedTablaIncidencias:
+    def __init__(self, data_manager: OptimizedDataManager):
+        self._data_manager = data_manager
+        self.column_mapping = {
+            "trabajador": "Trabajador",
+            "imputacion_nomina": "Imputación nómina",
+            "facturable": "Facturable",
+            "motivo": "Motivo",
+            "codigo_crown_origen": "Código Crown Origen",
+            "codigo_crown_destino": "Código Crown Destino",
+            "empresa_destino": "Empresa Destino",
+            "incidencia_horas": "Incidencia (horas)",
+            "incidencia_precio": "Incidencia (precio)",
+            "nocturnidad_horas": "Nocturnidad (horas)",
+            "nocturnidad_precio": "Nocturnidad (precio)",
+            "traslados_total": "Traslados (total)",
+            "coste_hora": "Coste hora",
+            "fecha": "Fecha",
+            "observaciones": "Observaciones",
+            "centro_preferente": "Centro Preferente",
+            "nombre_jefe_ope": "Nombre Jefe Ope",
+            "categoria": "Categoría",
+            "servicio": "Servicio",
+            "cod_reg_convenio": "Cod Reg Convenio",
+            "estado": "Estado",
+            "timestamp": "Timestamp"
+        }
+        self.inverse_mapping = {v: k for k, v in self.column_mapping.items()}
+
+    def _actualizar_datos_empleado(self, incidencia: Incidencia, nombre_trabajador: str, selected_jefe: str) -> None:
+        trabajadores_df = self._data_manager.get_df("trabajadores")
+        try:
+            trabajador_data = trabajadores_df[trabajadores_df["Nombre empleado"] == nombre_trabajador].iloc[0]
+            
+            incidencia.categoria = trabajador_data.get("Categoria", "N/A")
+            incidencia.cod_reg_convenio = trabajador_data.get("Cod Reg Convenio", "N/A")
+            incidencia.servicio = trabajador_data.get("Servicio", "N/A")
+            incidencia.coste_hora = float(trabajador_data.get("coste hora \nempresa", 0.0))
+            incidencia.nombre_jefe_ope = selected_jefe
+        except IndexError:
+            st.error(f"Error: No se encontraron datos para el trabajador '{nombre_trabajador}'.")
+        except KeyError as e:
+            st.error(f"Error: Una o más columnas del trabajador no se encontraron. Revisa la hoja 'trabajadores'. Error: {e}")
+
+    def render_supervisor_view(self):
+        st.subheader("📋 Registro de Incidencias")
+        
+        # Obtener datos de trabajadores para el selectbox
+        trabajadores_df = self._data_manager.get_df("trabajadores")
+        trabajadores = sorted(trabajadores_df["Nombre empleado"].unique().tolist()) if "Nombre empleado" in trabajadores_df.columns else []
+        motivos_df = self._data_manager.get_df("cuenta_motivos")
+        motivos = motivos_df['Motivo'].unique().tolist() if 'Motivo' in motivos_df.columns else []
+
+        with st.form("form_incidencia"):
+            selected_trabajador = st.selectbox("Seleccione Trabajador", options=[""] + trabajadores)
+            
+            if selected_trabajador:
+                # Mostrar campos de formulario cuando se selecciona un trabajador
+                col1, col2 = st.columns(2)
+                with col1:
+                    fecha = st.date_input("Fecha")
+                    motivo = st.selectbox("Motivo", options=[""] + motivos)
+                    incidencia_horas = st.number_input("Horas de Incidencia", min_value=0.0, step=0.5)
+                    traslados_total = st.number_input("Total Traslados (€)", min_value=0.0, step=0.1)
+                with col2:
+                    facturable = st.selectbox("Facturable", ["Sí", "No"])
+                    nocturnidad_horas = st.number_input("Horas de Nocturnidad", min_value=0.0, step=0.5)
+                    centro_preferente = st.text_input("Centro Preferente (Código)")
+                    observaciones = st.text_area("Observaciones")
+
+            submit_button = st.form_submit_button("➕ Añadir a la tabla")
+
+        if submit_button and selected_trabajador:
+            incidencia = Incidencia()
+            incidencia.trabajador = selected_trabajador
+            incidencia.imputacion_nomina = st.session_state.selected_imputacion
+            incidencia.facturable = facturable
+            incidencia.motivo = motivo
+            incidencia.incidencia_horas = incidencia_horas
+            incidencia.nocturnidad_horas = nocturnidad_horas
+            incidencia.traslados_total = traslados_total
+            incidencia.fecha = datetime.combine(fecha, datetime.min.time())
+            incidencia.observaciones = observaciones
+            incidencia.centro_preferente = centro_preferente
+
+            self._actualizar_datos_empleado(incidencia, selected_trabajador, st.session_state.selected_jefe)
+            
+            # Cálculo de precios automáticos
+            incidencia.incidencia_precio, incidencia.nocturnidad_precio = self._data_manager.get_precios_incidencia(incidencia.cod_reg_convenio, incidencia.servicio)
+
+            # Obtener códigos Crown y empresa
+            if centro_preferente:
+                incidencia.codigo_crown_origen = self._data_manager.get_cod_crown(centro_preferente)
+                if incidencia.codigo_crown_origen:
+                    incidencia.empresa_destino = self._data_manager.get_empresa_destino(incidencia.codigo_crown_origen)
+
+            st.session_state.db_manager.add_incidencia(incidencia)
+            st.success(f"Incidencia para {selected_trabajador} añadida a la tabla.")
+            st.rerun()
+
+        # Vista y envío de incidencias para el supervisor
+        st.subheader("📝 Incidencias Pendientes de Envío")
+        df_pendientes = st.session_state.db_manager.get_incidencias_by_estado('pending_supervisor_submission')
+        
+        if df_pendientes.empty:
+            st.info("No hay incidencias pendientes de envío al jefe.")
             return
 
-        excel_data = ExportManager.export_to_excel(incidencias_validas, self.data_manager)        
-        if excel_data:
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            filename = f"incidencias_{st.session_state.selected_jefe.replace(' ', '_')}_{timestamp}.xlsx"
+        df_pendientes = df_pendientes[df_pendientes["nombre_jefe_ope"] == st.session_state.selected_jefe]
 
-            st.download_button(
-                label="💾 Descargar Excel de Incidencias",
-                data=excel_data,
-                file_name=filename,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                help="Descarga todas las incidencias válidas en formato Excel (.xlsx)"
-            )
+        edited_df = st.data_editor(
+            df_pendientes.rename(columns=self.column_mapping),
+            key="supervisor_editor",
+            use_container_width=True,
+            disabled=("id", "timestamp", "estado")
+        )
 
-            st.success(f"✅ Listo para descargar: {len(incidencias_validas)} incidencias válidas")
+        if st.button("➡️ Enviar seleccionadas al Jefe"):
+            try:
+                # Obtener los IDs de las filas editadas
+                ids_a_enviar = edited_df[edited_df.index.isin(st.session_state.supervisor_editor['edited_rows'])]['id'].tolist()
+                
+                # Actualizar el estado de las incidencias seleccionadas
+                st.session_state.db_manager.update_incidencias_estado(ids_a_enviar, 'pending_jefe_validation')
+                st.success(f"¡{len(ids_a_enviar)} incidencias enviadas al jefe para su validación!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error al enviar las incidencias. Por favor, revisa el formato de los datos. Error: {e}")
 
+    def render_jefe_view(self, selected_jefe: str):
+        db_manager = st.session_state.db_manager
+        df_incidencias = db_manager.get_incidencias_by_estado('pending_jefe_validation')
+        df_incidencias = df_incidencias[df_incidencias["nombre_jefe_ope"] == selected_jefe]
+
+        if df_incidencias.empty:
+            st.info("No hay incidencias pendientes de validación para este jefe.")
+            return
+            
+        st.subheader("📝 Revisión y Validación de Incidencias")
+        st.write(f"Incidencias pendientes para {selected_jefe}:")
+        
+        edited_df = st.data_editor(
+            df_incidencias.rename(columns=self.column_mapping).reset_index(drop=True),
+            num_rows="dynamic",
+            key="jefe_validation_editor"
+        )
+        
+        if st.button("✅ Enviar Incidencias a RRHH"):
+            try:
+                ids_to_update = edited_df['id'].tolist()
+                db_manager.update_incidencias_estado(ids_to_update, 'ready_for_hr')
+                
+                edited_rows_data = [
+                    edited_df.loc[edited_df['id'] == incidencia_id].to_dict('records')[0]
+                    for incidencia_id in ids_to_update
+                ]
+                
+                send_email_to_hr(pd.DataFrame(edited_rows_data))
+                st.success("¡Incidencias enviadas a RRHH!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error al enviar. Error: {e}")
+
+        if st.button("💾 Guardar cambios"):
+            try:
+                for index, row_data in st.session_state.jefe_validation_editor['edited_rows'].items():
+                    incidencia_id = edited_df.loc[index, self.inverse_mapping['id']]
+                    updated_data = {self.inverse_mapping[key]: value for key, value in row_data.items()}
+                    db_manager.update_incidencia(incidencia_id, updated_data)
+                st.success("¡Cambios guardados!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error al guardar los cambios. Error: {e}")
+
+def send_email_to_hr(df_incidencias: pd.DataFrame):
+    st.info("Simulando el envío de correo electrónico a RRHH...")
+    st.write("Datos que serían enviados:")
+    st.dataframe(df_incidencias)
+
+# =============================================================================
+# APLICACIÓN PRINCIPAL OPTIMIZADA
+# =============================================================================
+
+class OptimizedIncidenciasApp:
+    def __init__(self):
+        if 'app_initialized_optimized' not in st.session_state:
+            st.session_state.app_initialized_optimized = True
+            st.session_state.selected_jefe = ""
+            st.session_state.selected_imputacion = ""
+            st.session_state.uploaded_file = None
+            st.session_state.debug_mode = False
+    
+    def run(self):
+        st.title("📋 App de Registro de Incidencias")
+        st.caption("Versión Optimizada para un Flujo de Aprobación")
+
+        st.sidebar.header("📁 Carga del Archivo Maestro")
+        uploaded_file = st.sidebar.file_uploader(
+            "Sube el archivo 'maestros.xlsx'",
+            type=["xlsx"],
+            key="maestros_excel"
+        )
+        
+        if uploaded_file != st.session_state.uploaded_file:
+            st.session_state.uploaded_file = uploaded_file
+            if 'data_manager' in st.session_state:
+                del st.session_state.data_manager
+        
+        if not st.session_state.uploaded_file:
+            st.warning("⚠️ Por favor, sube el archivo maestro de Excel para continuar.")
+            return
+
+        if 'data_manager' not in st.session_state:
+            with st.spinner("Inicializando aplicación y procesando datos..."):
+                st.session_state.data_manager = OptimizedDataManager(st.session_state.uploaded_file)
+                st.session_state.db_manager = DatabaseManager()
+
+        data_manager = st.session_state.data_manager
+        
+        jefes = data_manager.get_jefes()
+        imputaciones = data_manager.get_imputaciones()
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.selectbox("Imputación Nómina", imputaciones, key="selected_imputacion")
+        with col2:
+            st.selectbox("Nombre Jefe Ope", [""] + jefes, key="selected_jefe")
+        
+        if not st.session_state.selected_jefe or not st.session_state.selected_imputacion:
+            st.warning("⚠️ Por favor, selecciona la imputación de nómina y un jefe para comenzar.")
+            return
+
+        st.subheader("Seleccionar Rol")
+        rol = st.selectbox("Eres un:", ["Supervisor", "Jefe"], key="rol_selector")
+
+        tabla_optimizada = OptimizedTablaIncidencias(data_manager)
+
+        if rol == "Supervisor":
+            tabla_optimizada.render_supervisor_view()
+        elif rol == "Jefe":
+            tabla_optimizada.render_jefe_view(st.session_state.selected_jefe)
+    
 if __name__ == "__main__":
-    data_manager = DataManager()
-    app = IncidenciasApp(data_manager)
+    st.set_page_config(
+        page_title="Registro de Incidencias",
+        page_icon="📋",
+        layout="wide"
+    )
+    app = OptimizedIncidenciasApp()
     app.run()
