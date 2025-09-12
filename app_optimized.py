@@ -478,7 +478,18 @@ class OptimizedTablaIncidencias:
             # Manejo seguro de fechas
             if not df.empty and 'Fecha' in df.columns:
                 df['Fecha'] = df['Fecha'].apply(self._format_fecha_safe)
-            
+                
+            # 🔧 Normalización de columnas numéricas
+            numeric_cols = [
+                "Código Crown Origen", "Código Crown Destino", "Incidencia_horas",
+                "Incidencia_precio", "Nocturnidad_horas", "Precio_nocturnidad",
+                "Traslados_total", "Coste hora empresa", "Centro preferente"
+            ]
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+            # Guardar en cache
             st.session_state.cached_df = df
             st.session_state[cache_key] = current_hash
         else:
@@ -531,19 +542,17 @@ class OptimizedTablaIncidencias:
     def _format_fecha_safe(self, fecha):
         """Formateo seguro de fechas"""
         if fecha is None or pd.isna(fecha):
-            return ""
+            return pd.NaT
         if isinstance(fecha, datetime):
-            return fecha.strftime('%Y-%m-%d')
+            return fecha
         if isinstance(fecha, str):
             try:
                 fecha_dt = pd.to_datetime(fecha, errors='coerce')
-                if not pd.isna(fecha_dt):
-                    return fecha_dt.strftime('%Y-%m-%d')
-                else:
-                    return fecha
+                return fecha_dt if not pd.isna(fecha_dt) else pd.NaT
             except:
-                return fecha
-        return str(fecha)
+                return pd.NaT
+        return pd.NaT
+
 
     def _get_incidencias_hash(self, incidencias: List[Incidencia]) -> str:
         """Genera hash para detectar cambios en las incidencias"""
